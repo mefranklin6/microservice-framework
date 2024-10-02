@@ -41,6 +41,7 @@ var MicroserviceName = ""
 // All possible values are "Don't add another instance", "Remove older instance", or "Add another instance"
 // microservices can override this in their own code by setting this global variable
 var CheckFunctionAppendBehavior string = "Don't add another instance"
+var GlobalDelimiter = 13 // Read end of line delimiter (defaults to carriage return if the microservice doesn't set it)
 
 // globals
 // We've found sync.Map that could handle locking/unlocking by itself. Keeping as is for now to avoid potentially introducing bugs.
@@ -60,7 +61,6 @@ var devicesLock = make(map[string]bool)
 var devicesLockMutex sync.Mutex
 
 var global_reader = make(map[string]*bufio.Reader)
-var global_delimiter = 13 // Read end of line delimiter (defaults to carriage return if the microservice doesn't set it)
 
 // function stack
 var functionStack = [][]string{}
@@ -618,7 +618,7 @@ func TryReadLineFromSocket(socketKey string) string {
 			AddToErrors(socketKey, function+" - "+socketKey+" - n645ub can't set read timeout with: "+err.Error())
 			return ""
 		}
-		data, err = global_reader[socketKey].ReadBytes(byte(global_delimiter)) // Read up to the delimiter character
+		data, err = global_reader[socketKey].ReadBytes(byte(GlobalDelimiter)) // Read up to the delimiter character
 		//Log(fmt.Sprintf("RRRRRR  read: %v", string(data)))
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 			Log("tryReadLineFromSocket - " + socketKey + " - nothing to read" )
@@ -627,10 +627,10 @@ func TryReadLineFromSocket(socketKey string) string {
 
 			bytesRead = 0
 		} else if (err == nil) {  // succeeded reading something
-			bytesRead = bytes.Index(data, []byte(string(global_delimiter)))
+			bytesRead = bytes.Index(data, []byte(string(GlobalDelimiter)))
 			//Log(fmt.Sprintf("RRRRR read %d bytes", bytesRead))
 		} else {
-			AddToErrors(socketKey, function+" - "+socketKey+" - error seeking global_delimiter: "+err.Error())
+			AddToErrors(socketKey, function+" - "+socketKey+" - error seeking GlobalDelimiter: "+err.Error())
 			return ""
 		}
 	} else {   // UDP
@@ -713,7 +713,7 @@ func ConnectionsMapExists(socketKey string) bool {
 }
 
 func SetLineDelimiter(delimiter int) {
-	global_delimiter = delimiter // Used to find end of line on reads
+	GlobalDelimiter = delimiter // Used to find end of line on reads
 }
 
 func Log(text string) {
