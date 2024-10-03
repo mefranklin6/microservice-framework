@@ -1,4 +1,4 @@
-//version 1.1.1
+//version 1.1.2
 
 package framework
 
@@ -46,7 +46,7 @@ var GlobalDelimiter = 13 // Read end of line delimiter (defaults to carriage ret
 // globals
 // We've found sync.Map that could handle locking/unlocking by itself. Keeping as is for now to avoid potentially introducing bugs.
 var RelatedActions = make(map[string]map[string]string)
-var deviceStates = make(map[string]map[string]string)
+var DeviceStates = make(map[string]map[string]string)
 var deviceStatesMutex sync.Mutex
 var deviceErrors = make(map[string]map[string]string)
 var deviceErrorsMutex sync.Mutex
@@ -396,11 +396,11 @@ func CheckForEndPointInCache(socketKey string, endPoint string) bool {
 
 	// Log(function + " - socketKey: " + socketKey + " endPoint: " + endPoint)
 	// Log(fmt.Sprintf(function+" - deviceStates: %v", deviceStates))
-	if _, ok := deviceStates[socketKey]; !ok {
+	if _, ok := DeviceStates[socketKey]; !ok {
 		// Log(function + " - " + socketKey + " - first we hear of device")
 		return false // wasn't in cache
 	}
-	if _, ok := deviceStates[socketKey][endPoint]; !ok {
+	if _, ok := DeviceStates[socketKey][endPoint]; !ok {
 		// Log(function + " - " + socketKey + " - first we hear of data point")
 		return false
 	}
@@ -486,8 +486,8 @@ func EstablishSocketConnectionIfNeeded(socketKey string) bool {
 	}
 
 	deviceStatesMutex.Lock()
-	if _, ok := deviceStates[socketKey]; !ok {
-		deviceStates[socketKey] = make(map[string]string)
+	if _, ok := DeviceStates[socketKey]; !ok {
+		DeviceStates[socketKey] = make(map[string]string)
 	}
 	deviceStatesMutex.Unlock()
 
@@ -843,14 +843,14 @@ func HandleGet(context echo.Context) error {
 	} else {
 		// Use the value in the cache
 		deviceStatesMutex.Lock()
-		data := []byte(deviceStates[socketKey][endPoint])
+		data := []byte(DeviceStates[socketKey][endPoint])
 		retMsg = string(data)
 		err = json.Unmarshal(data, &valueMap)
 		// Log(fmt.Sprintf(function + " UUUU data is: %v, valueMap is:%v", string(data), valueMap))
 		if err != nil {
-			retMsg = function + " - vsb654 error unmarshaling value from the deviceStates cache (probably caused by bad formatting in device specific get function) u98hjlnkl: " + deviceStates[socketKey][endPoint] + " " + socketKey + " " + endPoint
+			retMsg = function + " - vsb654 error unmarshaling value from the deviceStates cache (probably caused by bad formatting in device specific get function) u98hjlnkl: " + DeviceStates[socketKey][endPoint] + " " + socketKey + " " + endPoint
 			AddToErrors(socketKey, retMsg)
-			delete(deviceStates[socketKey], endPoint) // get the offending value out of the cache so we have a chance to recover
+			delete(DeviceStates[socketKey], endPoint) // get the offending value out of the cache so we have a chance to recover
 			retCode = http.StatusNotFound
 		} 
 		deviceStatesMutex.Unlock()
@@ -913,12 +913,12 @@ func EndPointRefresh(arguments []string) bool {
 
 	// priming data structure
 	deviceStatesMutex.Lock()
-	if _, ok := deviceStates[socketKey]; !ok {
-		deviceStates[socketKey] = make(map[string]string)
+	if _, ok := DeviceStates[socketKey]; !ok {
+		DeviceStates[socketKey] = make(map[string]string)
 		// Log(fmt.Sprintf("created deviceStates entry for %s: deviceStates: %v", socketKey, deviceStates))
 	}
-	if _, ok := deviceStates[socketKey][endPoint]; !ok {
-		deviceStates[socketKey][endPoint] = `"unknown"` // back ticks make this legal JSON for unmarshaling purposes
+	if _, ok := DeviceStates[socketKey][endPoint]; !ok {
+		DeviceStates[socketKey][endPoint] = `"unknown"` // back ticks make this legal JSON for unmarshaling purposes
 		// Log(fmt.Sprintf("created endpoint: %s deviceStates: %v", endPoint, deviceStates))
 	}
 	deviceStatesMutex.Unlock()
@@ -944,9 +944,9 @@ func EndPointRefresh(arguments []string) bool {
 	deviceMutex.Unlock()
 
 	if err == nil {
-		// Log(fmt.Sprintf(function + " - putting %v into deviceStates[%v][%v]", resp, socketKey, endPoint))
+		// Log(fmt.Sprintf(function + " - putting %v into DeviceStates[%v][%v]", resp, socketKey, endPoint))
 		deviceStatesMutex.Lock()
-		deviceStates[socketKey][endPoint] = resp // store value in the cache
+		DeviceStates[socketKey][endPoint] = resp // store value in the cache
 		deviceStatesMutex.Unlock()
 		dataUpdated = true
 	} else {
@@ -972,7 +972,7 @@ func EndPointRefresh(arguments []string) bool {
 	} else {
 		Log(function + " - " + socketKey + " " + endPoint + " - device not freshly in use, no need to keep refreshing it")
 		deviceStatesMutex.Lock()
-		delete(deviceStates[socketKey], endPoint)
+		delete(DeviceStates[socketKey], endPoint)
 		deviceStatesMutex.Unlock()
 	}
 	lastQueriedMutex.Unlock()
@@ -1035,13 +1035,13 @@ func HandleUpdate(context echo.Context) error {
 
 	deviceStatesMutex.Lock()
 	// updating data structure
-	if _, ok := deviceStates[socketKey]; !ok {
-		deviceStates[socketKey] = make(map[string]string)
+	if _, ok := DeviceStates[socketKey]; !ok {
+		DeviceStates[socketKey] = make(map[string]string)
 	}
 	// Add quotes to the value to mimic what the device specific gets do (maybe add them elsewhere?) this is messy
 	//newState = `"` + newState + `"`
 	// Log(function + " - storing " + newState + " in deviceStates " + socketKey + " " + endPoint)
-	deviceStates[socketKey][endPoint] = newState
+	DeviceStates[socketKey][endPoint] = newState
 	DoRelatedActions(socketKey, setting, arg1+arg2)
 	deviceStatesMutex.Unlock()
 
@@ -1070,7 +1070,7 @@ func DoRelatedActions(socketKey string, setting string, params string) {
 		relatedValue := RelatedActions[i]["value"]
 		if i == setting { // have an operation that needs a related action
 			Log(function + " - setting cache value" + i + " " + relatedEndPoint + params + " " + relatedValue)
-			deviceStates[socketKey][relatedEndPoint+params] = relatedValue
+			DeviceStates[socketKey][relatedEndPoint+params] = relatedValue
 		}
 	}
 }
