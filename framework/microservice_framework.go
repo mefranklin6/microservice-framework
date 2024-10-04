@@ -1,4 +1,4 @@
-//version 1.1.5
+//version 1.1.6
 
 package framework
 
@@ -494,7 +494,13 @@ func establishSocketConnectionIfNeeded(socketKey string) bool {
 	return true
 }
 
-func closeSocketConnection(socketKey string) bool {
+func CloseSocketConnection(socketKey string) {
+	connectionsMutex.Lock()
+	internalCloseSocketConnection(socketKey)
+	connectionsMutex.Unlock()
+}
+
+func internalCloseSocketConnection(socketKey string) bool {
 	if internalConnectionsMapExists(socketKey) {
 		if UseUDP {
 			connectionsUDP[socketKey].Close()
@@ -503,7 +509,7 @@ func closeSocketConnection(socketKey string) bool {
 			connectionsTCP[socketKey].Close()
 			delete(connectionsTCP, socketKey)
 		}
-		// Log("closeSocketConnection - " + socketKey + " - connection closed")
+		// Log("internalCloseSocketConnection - " + socketKey + " - connection closed")
 		return true
 	} 
 	// we succeed no matter what - either it was gone already or we closed it or there never 
@@ -544,7 +550,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 			} else {
 				AddToErrors(socketKey, function+" - "+socketKey+" - 324fsd write error: "+err.Error()+" closing socket connection")
 			}
-			closeSocketConnection(socketKey)
+			internalCloseSocketConnection(socketKey)
 			return false
 		} else {
 			Log("writeLineToSocket - " + socketKey + " - wrote " + strconv.Itoa(bytesWritten) + " bytes: " + line)
@@ -565,7 +571,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 			} else {
 				AddToErrors(socketKey, function+" - "+socketKey+" - vfwa3 write error: "+err.Error()+" closing socket connection")
 			}
-			closeSocketConnection(socketKey)
+			internalCloseSocketConnection(socketKey)
 			return false
 		} else {
 			Log("writeLineToSocket - " + socketKey + " - wrote " + strconv.Itoa(bytesWritten) + " bytes: " + line)
@@ -666,7 +672,7 @@ func tryReadLineFromSocket(socketKey string) string {
 				// Closing connection in case of timeout to let other UDP devices (e.g. VISCA cameras)
 				//  connect with microservice.
 				// Caused by AVer set power not sending a response back.
-				closeSocketConnection(socketKey)
+				internalCloseSocketConnection(socketKey)
 			}
 			// Telnet negotiations for the Biamp DSP do not have a terminator. The response is read in but the connection times out.
 			// This allows us to see and respond to the negotiation.
@@ -683,7 +689,7 @@ func tryReadLineFromSocket(socketKey string) string {
 			return ""
 		} else {
 			AddToErrors(socketKey, function+" - wrea354 "+socketKey+" - read error: "+err.Error()+" closing socket connection")
-			closeSocketConnection(socketKey)
+			internalCloseSocketConnection(socketKey)
 		}
 		Log("  " + function + " - q423fsa " + socketKey + " - read : " + ret)
 		return ""
@@ -961,9 +967,7 @@ func endPointRefresh(arguments []string) bool {
 	}
 
 	if !KeepAlive {
-		connectionsMutex.Lock()
-		closeSocketConnection(socketKey)
-		connectionsMutex.Unlock()
+		CloseSocketConnection(socketKey)
 	}
 
 	lastQueriedMutex.Lock()
@@ -1129,9 +1133,7 @@ func updateDoOnce(arguments []string) bool {
 	resp = resp // appease
 
 	if !KeepAlive {
-		connectionsMutex.Lock()
-		closeSocketConnection(socketKey)
-		connectionsMutex.Unlock()
+		CloseSocketConnection(socketKey)
 	}
 
 	if err != nil {
