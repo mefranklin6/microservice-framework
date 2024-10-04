@@ -1,4 +1,4 @@
-//version 1.1.3
+//version 1.1.4
 
 package framework
 
@@ -440,7 +440,7 @@ func CheckFunctionAppend(functionToCall string, endPoint string, socketKey strin
 func EstablishSocketConnectionIfNeeded(socketKey string) bool {
 	function := "EstablishSocketConnectionIfNeeded"
 
-	if ConnectionsMapExists(socketKey) {
+	if internalConnectionsMapExists(socketKey) {
 		Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection already in table")
 		return true
 	} else {
@@ -495,7 +495,7 @@ func EstablishSocketConnectionIfNeeded(socketKey string) bool {
 }
 
 func CloseSocketConnection(socketKey string) bool {
-	if ConnectionsMapExists(socketKey) {
+	if internalConnectionsMapExists(socketKey) {
 		if UseUDP {
 			connectionsUDP[socketKey].Close()
 			delete(connectionsUDP, socketKey)
@@ -518,7 +518,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 
 	Log(function + " - writing: " + strings.Trim(line, "\r\n") + " to: " + socketKey)
 
-	if !ConnectionsMapExists(socketKey) {
+	if !internalConnectionsMapExists(socketKey) {
 		if !EstablishSocketConnectionIfNeeded(socketKey) {
 			return AddToErrorsAndReturn("all", function+" - "+socketKey+" - bsfd456ty connection not in table and could not establish it", false)
 		}
@@ -602,7 +602,7 @@ func TryReadLineFromSocket(socketKey string) string {
 	connectionsMutex.Lock()
 	defer connectionsMutex.Unlock()
 
-	if !ConnectionsMapExists(socketKey) {
+	if !internalConnectionsMapExists(socketKey) {
 		if !EstablishSocketConnectionIfNeeded(socketKey) {
 			AddToErrors("all", function+" - ljk54v "+socketKey+" - connection not in table and could not establish it")
 			return ""
@@ -694,9 +694,19 @@ func TryReadLineFromSocket(socketKey string) string {
 	return ret
 }
 
+// External function to check if a connection exists. Handles locking and unlocking the mutex.
+func CheckConnectionsMapExists(socketKey string) bool {
+	connectionsMutex.Lock()
+	value := internalConnectionsMapExists(socketKey)
+	connectionsMutex.Unlock()
+
+	return value
+}
+
 // Utility function to avoid repeating weird golang syntax many times
-//    and to encapsulate UDP versus TCP connections differences
-func ConnectionsMapExists(socketKey string) bool {
+// and to encapsulate UDP versus TCP connections differences
+// Expected to be used inside the framework. Locking/unlocking happens outside this function.
+func internalConnectionsMapExists(socketKey string) bool {
 	if (UseUDP) {
 		if _, ok := connectionsUDP[socketKey]; !ok {
 			//Log("q3fasv UDP not connected")
