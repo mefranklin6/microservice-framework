@@ -1,4 +1,4 @@
-//version 1.1.4
+//version 1.1.5
 
 package framework
 
@@ -88,26 +88,26 @@ func RegisterMainSetFunc(fn MainSetFunc) {
     doDeviceSpecificSet = fn
 }
 
-func RegisterMicroserviceFunctions(router *echo.Echo) {
-	router.GET("/", Index)
-	router.GET(":address/errors", GetErrors)
-	router.GET(":address", HandleGet)
-	router.GET(":address/:setting", HandleGet)
-	router.GET(":address/:setting/:arg1", HandleGet)
-	router.GET(":address/:setting/:arg1/:arg2", HandleGet)
-	router.PUT(":address", HandleUpdate)
-	router.PUT(":address/:setting", HandleUpdate)
-	router.PUT(":address/:setting/:arg1", HandleUpdate)
-	router.PUT(":address/:setting/:arg1/:arg2", HandleUpdate)
+func registerMicroserviceFunctions(router *echo.Echo) {
+	router.GET("/", index)
+	router.GET(":address/errors", getErrors)
+	router.GET(":address", handleGet)
+	router.GET(":address/:setting", handleGet)
+	router.GET(":address/:setting/:arg1", handleGet)
+	router.GET(":address/:setting/:arg1/:arg2", handleGet)
+	router.PUT(":address", handleUpdate)
+	router.PUT(":address/:setting", handleUpdate)
+	router.PUT(":address/:setting/:arg1", handleUpdate)
+	router.PUT(":address/:setting/:arg1/:arg2", handleUpdate)
 
 	// make sure all functions meant to be stacked are listed here
 	stubStorage = map[string]interface{}{
-		"EndPointRefresh": EndPointRefresh,
-		"UpdateDoOnce":    UpdateDoOnce,
+		"endPointRefresh": endPointRefresh,
+		"updateDoOnce":    updateDoOnce,
 	}
 }
 
-func Index(context echo.Context) error {
+func index(context echo.Context) error {
 	return context.String(http.StatusOK, "\""+ MicroserviceName +"\"\n")
 }
 
@@ -130,18 +130,18 @@ func Startup() {
 	// router.Use(middleware.Recover())
 
 	Log("Starting function stack processor")
-	go FunctionStackProcessor()
+	go functionStackProcessor()
 
 	Log("Registering endpoint functions")
-	RegisterMicroserviceFunctions(router)
+	registerMicroserviceFunctions(router)
 
 	// start server
 	Log("Starting web server")
 	router.Logger.Fatal(router.Start(":80"))
 }
 
-func Call(socketKey string, funcName string, params ...interface{}) (result interface{}, err error) {
-	function := "Call"
+func call(socketKey string, funcName string, params ...interface{}) (result interface{}, err error) {
+	function := "call"
 	Log(fmt.Sprintf(function + " - calling: " + funcName + " with %v", params))
 
 	f := reflect.ValueOf(stubStorage[funcName])
@@ -164,7 +164,7 @@ func Call(socketKey string, funcName string, params ...interface{}) (result inte
 	var boolResult bool
 	boolResult = result.(bool)
 	if boolResult == false {
-		LogError(function + " - uh oh it didn't work")
+		logError(function + " - uh oh it didn't work")
 	}
 
 	devicesLockMutex.Lock()
@@ -175,14 +175,14 @@ func Call(socketKey string, funcName string, params ...interface{}) (result inte
 	return
 }
 
-func FunctionStackProcessor() {
-	function := "FunctionStackProcessor"
+func functionStackProcessor() {
+	function := "functionStackProcessor"
 	defer func() {
         if r := recover(); r != nil {
 			retMsg := fmt.Sprintf(function + " - bsdf354 unhandled panic: %v stack: %v restarting function stack processor", r, string(debug.Stack()[:]))
 			AddToErrors("all", retMsg) 
 			Log("Restarting function stack processor")
-			go FunctionStackProcessor()
+			go functionStackProcessor()
         }
     }()
 
@@ -208,7 +208,7 @@ func FunctionStackProcessor() {
 			if after { // now is after the timestamp, so we have an entry that is ready for action
 				// Log(fmt.Sprintf(function + " - item(s) are on functionStack: %v functionStackTimes: %v and time to run one",
 				//	functionStack, functionStackTimes))
-				peeked := FunctionStackPeek(pos)
+				peeked := functionStackPeek(pos)
 				socketKey := peeked[2]
 
 				devicesLockMutex.Lock()
@@ -226,14 +226,14 @@ func FunctionStackProcessor() {
 				} else {
 					Log(fmt.Sprintf("Calling a function from position %v in the stack", pos))
 					functionStackMutex.Lock()
-					popped := FunctionStackPop(pos)
+					popped := functionStackPop(pos)
 					functionStackMutex.Unlock()
 					devicesLock[socketKey] = true // lock it before launching the thread to service this call
 
 					// launch this call in a short-lived thread so we can process pending calls for another device
 					// if there are any pending
 					Log(fmt.Sprintf(function+" launching Call for "+socketKey+" %v", popped))
-					go Call(socketKey, popped[0], popped[2:])
+					go call(socketKey, popped[0], popped[2:])
 					called = true
 				}
 				devicesLockMutex.Unlock()
@@ -242,7 +242,7 @@ func FunctionStackProcessor() {
 				}
 
 				// see if the function stack has too many entries
-				CheckFunctionStackSize()
+				checkFunctionStackSize()
 
 				functionStackMutex.Lock()
 				// see if items on our stack are getting too old
@@ -277,7 +277,7 @@ func FunctionStackProcessor() {
 	// execution won't reach this point (infinite loop above)
 }
 
-func FunctionStackAppend(toAppend []string) {
+func functionStackAppend(toAppend []string) {
 	functionStackMutex.Lock()
 	functionStack = append(functionStack, toAppend)
 	// Log(fmt.Sprintf("functionStackAppend - added an item, stack is: %v", functionStack))
@@ -288,7 +288,7 @@ func FunctionStackAppend(toAppend []string) {
 	functionStackMutex.Unlock()
 }
 
-func FunctionStackPrepend(toPrepend []string) {
+func functionStackPrepend(toPrepend []string) {
 	functionStackMutex.Lock()
 	functionStack = append([][]string{toPrepend}, functionStack...)
 	now := time.Now()
@@ -298,7 +298,7 @@ func FunctionStackPrepend(toPrepend []string) {
 	functionStackMutex.Unlock()
 }
 
-func FunctionStackInsertAfterUpdates(toInsert []string) {
+func functionStackInsertAfterUpdates(toInsert []string) {
 	// Add the operation after other update operations.  Used to preserve power on order even if 
 	//   the PUTs come in faster than the microservice can process them.
 
@@ -324,8 +324,8 @@ func FunctionStackInsertAfterUpdates(toInsert []string) {
 	functionStackMutex.Unlock()
 }
 
-func CheckFunctionStackSize() {
-	function := "CheckFunctionStackSize"
+func checkFunctionStackSize() {
+	function := "checkFunctionStackSize"
 	functionStackMutex.Lock()
 	// see if our stack has gotten too big
 	lenStack := len(functionStack)
@@ -336,7 +336,7 @@ func CheckFunctionStackSize() {
 	functionStackMutex.Unlock()
 }
 
-func FunctionStackPop(i int) []string { // Get a value in the stack at the specified index and pop and return it
+func functionStackPop(i int) []string { // Get a value in the stack at the specified index and pop and return it
 	// NOTE: make sure you lock the functionStackMutex before calling this!
 	toReturn := functionStack[i]
 	functionStack = append(functionStack[0:i], functionStack[i+1:]...) // variadic function requires "..."" for some reason
@@ -345,7 +345,7 @@ func FunctionStackPop(i int) []string { // Get a value in the stack at the speci
 	return toReturn
 }
 
-func FunctionStackPeek(i int) []string { // Get a value in the stack at the specified index and return it without popping
+func functionStackPeek(i int) []string { // Get a value in the stack at the specified index and return it without popping
 	functionStackMutex.Lock()
 	toReturn := functionStack[i]
 	functionStackMutex.Unlock()
@@ -353,7 +353,7 @@ func FunctionStackPeek(i int) []string { // Get a value in the stack at the spec
 	return toReturn
 }
 
-func FunctionStackRemove(functionName string, endPoint string, socketKey string) bool {
+func functionStackRemove(functionName string, endPoint string, socketKey string) bool {
 	functionStackMutex.Lock()
 	var i int = 0
 	for _, s := range functionStack {
@@ -370,7 +370,7 @@ func FunctionStackRemove(functionName string, endPoint string, socketKey string)
 	return false
 }
 
-func FunctionStackExist(functionName string, endPoint string, socketKey string) bool {
+func functionStackExist(functionName string, endPoint string, socketKey string) bool {
 	// function := "functionStackExist"
 
 	functionStackMutex.Lock()
@@ -409,24 +409,24 @@ func CheckForEndPointInCache(socketKey string, endPoint string) bool {
 	return true
 }
 
-func CheckFunctionAppend(functionToCall string, endPoint string, socketKey string) bool {
+func checkFunctionAppend(functionToCall string, endPoint string, socketKey string) bool {
 	function := "CheckFunctionAppend"
 
 	// log( function + " - checking if we should append the function call or not" )
 	// log( fmt.Sprintf( "     functionStack: %v " + socketKey + " " + endPoint + " " + functionToCall, functionStack))
-	if !FunctionStackExist(functionToCall, endPoint, socketKey) {
+	if !functionStackExist(functionToCall, endPoint, socketKey) {
 		// log(function + " - adding " + socketKey + " " + functionToCall + " " + endPoint + " because it wasn't on function stack already")
 		return true
 	} else if CheckFunctionAppendBehavior == "Don't add another instance" {
 		// log(function + " - not adding " + socketKey + " " + functionToCall + " " + endPoint + " because a duplicate exists on the function stack already")
 		return false
 	} else if CheckFunctionAppendBehavior == "Remove older instance" {
-		if functionToCall == "EndPointRefresh" {
+		if functionToCall == "endPointRefresh" {
 			Log(function + " - leaving older refresh duplicate on function stack and not adding a new one " + socketKey + " " + functionToCall + " " + endPoint + " that exists on the function stack already")
 			return false;
 		} else {
 			Log(function + " - replacing older duplicate on function stack " + socketKey + " " + functionToCall + " " + endPoint + " that exists on the function stack already")
-			FunctionStackRemove(functionToCall, endPoint, socketKey)
+			functionStackRemove(functionToCall, endPoint, socketKey)
 			return true
 		}
 	} else if CheckFunctionAppendBehavior == "Add another instance" {
@@ -437,8 +437,8 @@ func CheckFunctionAppend(functionToCall string, endPoint string, socketKey strin
 	return true
 }
 
-func EstablishSocketConnectionIfNeeded(socketKey string) bool {
-	function := "EstablishSocketConnectionIfNeeded"
+func establishSocketConnectionIfNeeded(socketKey string) bool {
+	function := "establishSocketConnectionIfNeeded"
 
 	if internalConnectionsMapExists(socketKey) {
 		Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection already in table")
@@ -494,7 +494,7 @@ func EstablishSocketConnectionIfNeeded(socketKey string) bool {
 	return true
 }
 
-func CloseSocketConnection(socketKey string) bool {
+func closeSocketConnection(socketKey string) bool {
 	if internalConnectionsMapExists(socketKey) {
 		if UseUDP {
 			connectionsUDP[socketKey].Close()
@@ -519,15 +519,15 @@ func WriteLineToSocket(socketKey string, line string) bool {
 	Log(function + " - writing: " + strings.Trim(line, "\r\n") + " to: " + socketKey)
 
 	if !internalConnectionsMapExists(socketKey) {
-		if !EstablishSocketConnectionIfNeeded(socketKey) {
-			return AddToErrorsAndReturn("all", function+" - "+socketKey+" - bsfd456ty connection not in table and could not establish it", false)
+		if !establishSocketConnectionIfNeeded(socketKey) {
+			return addToErrorsAndReturn("all", function+" - "+socketKey+" - bsfd456ty connection not in table and could not establish it", false)
 		}
 	}
 
 	if UseUDP {
 		err := connectionsUDP[socketKey].SetWriteDeadline(time.Now().Add(time.Duration(WriteTimeout) * time.Second))
 		if err != nil {
-			return AddToErrorsAndReturn(socketKey, function+" - "+socketKey+" - bdsf34432 can't set write timeout with: "+err.Error(), false)
+			return addToErrorsAndReturn(socketKey, function+" - "+socketKey+" - bdsf34432 can't set write timeout with: "+err.Error(), false)
 		}
 		socketAddress := strings.Split(socketKey, "@")[1]
 		remoteaddr, err := net.ResolveUDPAddr("udp", socketAddress)
@@ -544,7 +544,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 			} else {
 				AddToErrors(socketKey, function+" - "+socketKey+" - 324fsd write error: "+err.Error()+" closing socket connection")
 			}
-			CloseSocketConnection(socketKey)
+			closeSocketConnection(socketKey)
 			return false
 		} else {
 			Log("writeLineToSocket - " + socketKey + " - wrote " + strconv.Itoa(bytesWritten) + " bytes: " + line)
@@ -553,7 +553,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 	} else {  // TCP
 		err := connectionsTCP[socketKey].SetWriteDeadline(time.Now().Add(time.Duration(WriteTimeout) * time.Second))
 		if err != nil {
-			return AddToErrorsAndReturn(socketKey, function+" - "+socketKey+" - can't set write timeout with: "+err.Error(), false)
+			return addToErrorsAndReturn(socketKey, function+" - "+socketKey+" - can't set write timeout with: "+err.Error(), false)
 		}
 
 		bytesWritten, err := connectionsTCP[socketKey].Write([]byte(line))
@@ -565,7 +565,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 			} else {
 				AddToErrors(socketKey, function+" - "+socketKey+" - vfwa3 write error: "+err.Error()+" closing socket connection")
 			}
-			CloseSocketConnection(socketKey)
+			closeSocketConnection(socketKey)
 			return false
 		} else {
 			Log("writeLineToSocket - " + socketKey + " - wrote " + strconv.Itoa(bytesWritten) + " bytes: " + line)
@@ -583,7 +583,7 @@ func ReadLineFromSocket(socketKey string) string {
 	msg := ""
 	tries := 0
 	for len(msg) == 0 && tries < MaxReadTries {
-		msg = TryReadLineFromSocket(socketKey)
+		msg = tryReadLineFromSocket(socketKey)
 		tries++
 		if len(msg) == 0 && tries > ReadNoSleepTries { // failed multiple times, slow down our attempts
 			// Log("readLineFromSocket sleeping")
@@ -596,14 +596,14 @@ func ReadLineFromSocket(socketKey string) string {
 } 
 
 // This does the work of reading a line with a short timeout.  It can see if there is more pending input from the socket.
-func TryReadLineFromSocket(socketKey string) string {
+func tryReadLineFromSocket(socketKey string) string {
 	function := "TryReadLineFromSocket"
 	// Log("tryReadLineFromSocket reading from: " + socketKey)
 	connectionsMutex.Lock()
 	defer connectionsMutex.Unlock()
 
 	if !internalConnectionsMapExists(socketKey) {
-		if !EstablishSocketConnectionIfNeeded(socketKey) {
+		if !establishSocketConnectionIfNeeded(socketKey) {
 			AddToErrors("all", function+" - ljk54v "+socketKey+" - connection not in table and could not establish it")
 			return ""
 		}
@@ -666,7 +666,7 @@ func TryReadLineFromSocket(socketKey string) string {
 				// Closing connection in case of timeout to let other UDP devices (e.g. VISCA cameras)
 				//  connect with microservice.
 				// Caused by AVer set power not sending a response back.
-				CloseSocketConnection(socketKey)
+				closeSocketConnection(socketKey)
 			}
 			// Telnet negotiations for the Biamp DSP do not have a terminator. The response is read in but the connection times out.
 			// This allows us to see and respond to the negotiation.
@@ -683,7 +683,7 @@ func TryReadLineFromSocket(socketKey string) string {
 			return ""
 		} else {
 			AddToErrors(socketKey, function+" - wrea354 "+socketKey+" - read error: "+err.Error()+" closing socket connection")
-			CloseSocketConnection(socketKey)
+			closeSocketConnection(socketKey)
 		}
 		Log("  " + function + " - q423fsa " + socketKey + " - read : " + ret)
 		return ""
@@ -722,24 +722,20 @@ func internalConnectionsMapExists(socketKey string) bool {
 	return true  // if we got here, there is already a map created
 }
 
-func SetLineDelimiter(delimiter int) {
-	GlobalDelimiter = delimiter // Used to find end of line on reads
-}
-
 func Log(text string) {
-	fmt.Println(GetTimeStamp() + " - " + text)
+	fmt.Println(getTimeStamp() + " - " + text)
 }
 
-func LogError(text string) {
-	fmt.Println(GetTimeStamp() + " - \033[1;31m" + text + "\033[0m")
+func logError(text string) {
+	fmt.Println(getTimeStamp() + " - \033[1;31m" + text + "\033[0m")
 }
 
-func GetTimeStamp() string {
+func getTimeStamp() string {
 	loc, _ := time.LoadLocation("America/New_York")
 	return time.Now().In(loc).Format("2006-01-02 15:04:05.000000")
 }
 
-func GetSocketKey(context echo.Context) (string, error) {
+func getSocketKey(context echo.Context) (string, error) {
 	var address = context.Param("address")
 	var port = DefaultSocketPort
 	var username = ""
@@ -772,8 +768,8 @@ func GetSocketKey(context echo.Context) (string, error) {
 	return username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
 }
 
-func GetErrors(context echo.Context) error {
-	socketKey, err := GetSocketKey(context)
+func getErrors(context echo.Context) error {
+	socketKey, err := getSocketKey(context)
 	if err != nil {
 		AddToErrors("all", "getErrors - 23sdsdw# couldn't get a socket key with error: "+err.Error())
 		return context.JSON(http.StatusInternalServerError, "couldn't get a socket key with error: "+err.Error())
@@ -799,26 +795,26 @@ func GetErrors(context echo.Context) error {
 	// Log( "getErrors - " + socketKey + " - " + strings.Replace(errs, "\n", ", ", -1) )
 	return context.JSON(httpResponseCode, errs)
 }
-
+// Prints the error and adds it the deviceErrors map
 func AddToErrors(socketKey string, errorMessage string) {
 	deviceErrorsMutex.Lock()
 	Log("addToErrors - logging an error: " + errorMessage)
-	LogError(errorMessage)
+	logError(errorMessage)
 	if _, ok := deviceErrors[socketKey]; !ok {
 		deviceErrors[socketKey] = make(map[string]string)
 	}
-	deviceErrors[socketKey][GetTimeStamp()] = errorMessage
+	deviceErrors[socketKey][getTimeStamp()] = errorMessage
 	deviceErrorsMutex.Unlock()
 }
 
-func AddToErrorsAndReturn(socketKey string, errorMessage string, toReturn bool) bool {
+func addToErrorsAndReturn(socketKey string, errorMessage string, toReturn bool) bool {
 	AddToErrors(socketKey, errorMessage)
 
 	return toReturn
 }
 
-func HandleGet(context echo.Context) error {
-	function := "HandleGet"
+func handleGet(context echo.Context) error {
+	function := "handleGet"
 
 	var valueMap interface{}
 	setting := context.Param("setting")
@@ -828,7 +824,7 @@ func HandleGet(context echo.Context) error {
 	retMsg := "uninitialized"
 	retCode := http.StatusOK
 
-	socketKey, err := GetSocketKey(context)
+	socketKey, err := getSocketKey(context)
 	defer func() {
         if r := recover(); r != nil {
 			retMsg := fmt.Sprintf(function + " - ndh7456 unhandled panic: %v stack: %v", r, string(debug.Stack()[:]))
@@ -867,26 +863,26 @@ func HandleGet(context echo.Context) error {
 	}
 
 	// Make sure we will refresh this value in the cache regardless of whether or not this was a cache hit.
-	functionStackFunction := "EndPointRefresh"
+	functionStackFunction := "endPointRefresh"
 	// Note that the repetition of endPoint in the parameters is necessary - each value is used in a different layer
 	if retCode != http.StatusOK {
 		// Cache miss - need to get a refresh ASAP, but after any pending updates
 		if arg2 != "" {
-			FunctionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
+			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
 		} else if arg1 != "" {
-			FunctionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1})
+			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1})
 		} else {
-			FunctionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, endPoint, setting})
+			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, endPoint, setting})
 		}
 	} else {
 		// Cache hit - schedule a normal refresh for later
-		if CheckFunctionAppend(functionStackFunction, endPoint, socketKey) {
+		if checkFunctionAppend(functionStackFunction, endPoint, socketKey) {
 			if arg2 != "" {
-				FunctionStackAppend([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
+				functionStackAppend([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
 			} else if arg1 != "" {
-				FunctionStackAppend([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1})
+				functionStackAppend([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1})
 			} else {
-				FunctionStackAppend([]string{functionStackFunction, endPoint, socketKey, endPoint, setting})
+				functionStackAppend([]string{functionStackFunction, endPoint, socketKey, endPoint, setting})
 			}
 		}
 	}
@@ -901,8 +897,8 @@ var callDevice = true  // Hack to get around foibles of golang panic processing:
 					// so we call again and use a global to prevent device processing the second time.
 					// Ugly, but it works.
 
-func EndPointRefresh(arguments []string) bool {
-	function := "EndPointRefresh"
+func endPointRefresh(arguments []string) bool {
+	function := "endPointRefresh"
 	refreshError := false
 
 	dataUpdated := false
@@ -940,7 +936,7 @@ func EndPointRefresh(arguments []string) bool {
 			AddToErrors(socketKey, retMsg) 
 			callDevice = false  // make the recursive call noted above
 			deviceMutex.Unlock()
-			dataUpdated = EndPointRefresh(arguments)
+			dataUpdated = endPointRefresh(arguments)
 			callDevice = true  // let the next invocation try the device again
         }
     }()	
@@ -966,7 +962,7 @@ func EndPointRefresh(arguments []string) bool {
 
 	if !KeepAlive {
 		connectionsMutex.Lock()
-		CloseSocketConnection(socketKey)
+		closeSocketConnection(socketKey)
 		connectionsMutex.Unlock()
 	}
 
@@ -976,8 +972,8 @@ func EndPointRefresh(arguments []string) bool {
 	if !CheckForEndPointInCache(socketKey, endPoint) ||
 		time.Duration(time.Now().Sub(lastQueried[socketKey])) < time.Duration(time.Duration(KeepRefreshingFor) * time.Second) {
 		Log(function + " - " + socketKey + " - ef3241 device freshly in use, we'll update it again later")
-		if !refreshError && CheckFunctionAppend(function, endPoint, socketKey) {
-			FunctionStackAppend(append([]string{function, endPoint}, arguments...))
+		if !refreshError && checkFunctionAppend(function, endPoint, socketKey) {
+			functionStackAppend(append([]string{function, endPoint}, arguments...))
 		}
 	} else {
 		Log(function + " - " + socketKey + " " + endPoint + " - device not freshly in use, no need to keep refreshing it")
@@ -990,15 +986,15 @@ func EndPointRefresh(arguments []string) bool {
 	return dataUpdated
 }
 
-func HandleUpdate(context echo.Context) error {
-	function := "HandleUpdate"
+func handleUpdate(context echo.Context) error {
+	function := "handleUpdate"
 
 	setting := context.Param("setting")
 	arg1 := context.Param("arg1")
 	arg2 := context.Param("arg2")
 	endPoint := setting + arg1 + arg2
 
-	socketKey, err := GetSocketKey(context)
+	socketKey, err := getSocketKey(context)
 	defer func() {
         if r := recover(); r != nil {
 			retMsg := fmt.Sprintf(function + " - lnnui3q23 unhandled panic: %v stack: %v", r, string(debug.Stack()[:]))
@@ -1052,20 +1048,20 @@ func HandleUpdate(context echo.Context) error {
 	//newState = `"` + newState + `"`
 	// Log(function + " - storing " + newState + " in deviceStates " + socketKey + " " + endPoint)
 	deviceStates[socketKey][endPoint] = newState
-	DoRelatedActions(socketKey, setting, arg1+arg2)
+	doRelatedActions(socketKey, setting, arg1+arg2)
 	deviceStatesMutex.Unlock()
 
 	// Put the update on the function stack to happen ASAP but without our REST client having to wait
 	//    and after any other pending updates (especially after power on which can generate
 	//    "unavailable time" type problems for other updates)
 	functionStackFunction := "UpdateDoOnce"
-	if CheckFunctionAppend(functionStackFunction, endPoint, socketKey) {
+	if checkFunctionAppend(functionStackFunction, endPoint, socketKey) {
 		if arg2 != "" {
-			FunctionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, arg1, arg2, newState})
+			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, arg1, arg2, newState})
 		} else if arg1 != "" {
-			FunctionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, arg1, newState})
+			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, arg1, newState})
 		} else {
-			FunctionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, newState})
+			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, newState})
 		}
 	}
 
@@ -1073,7 +1069,7 @@ func HandleUpdate(context echo.Context) error {
 	return context.JSON(http.StatusOK, "ok")
 }
 
-func DoRelatedActions(socketKey string, setting string, params string) {
+func doRelatedActions(socketKey string, setting string, params string) {
 	function := "DoRelatedActions"
 	for i := range RelatedActions {
 		relatedEndPoint := RelatedActions[i]["endPoint"]
@@ -1084,7 +1080,7 @@ func DoRelatedActions(socketKey string, setting string, params string) {
 		}
 	}
 }
-
+// Can be called externally to get the cached value for a device endpoint
 func GetDeviceStateEndpoint(socketKey string, endpoint string) string {
 	deviceStatesMutex.Lock()
 	value := deviceStates[socketKey][endpoint]
@@ -1092,14 +1088,14 @@ func GetDeviceStateEndpoint(socketKey string, endpoint string) string {
 
 	return value
 }
-
+// Can be called externally to set the cached value for a device endpoint
 func SetDeviceStateEndpoint(socketKey string, endpoint string, value string) {
 	deviceStatesMutex.Lock()
 	deviceStates[socketKey][endpoint] = value
 	deviceStatesMutex.Unlock()
 }
 
-func UpdateDoOnce(arguments []string) bool {
+func updateDoOnce(arguments []string) bool {
 	function := "UpdateDoOnce"
 
 	socketKey := arguments[0]
@@ -1134,7 +1130,7 @@ func UpdateDoOnce(arguments []string) bool {
 
 	if !KeepAlive {
 		connectionsMutex.Lock()
-		CloseSocketConnection(socketKey)
+		closeSocketConnection(socketKey)
 		connectionsMutex.Unlock()
 	}
 
