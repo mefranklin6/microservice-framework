@@ -307,7 +307,7 @@ func functionStackInsertAfterUpdates(toInsert []string) {
 	functionStackMutex.Lock()
 	// scan past any updates already on the function stack
 	i := 0
-	for (i < len(functionStack) && functionStack[i][0] == "UpdateDoOnce") {
+	for (i < len(functionStack) && functionStack[i][0] == "updateDoOnce") {
 		i++
 	}
 	// Log(fmt.Sprintf("IIIIII: inserted at i = %d", i))
@@ -1058,7 +1058,7 @@ func handleUpdate(context echo.Context) error {
 	// Put the update on the function stack to happen ASAP but without our REST client having to wait
 	//    and after any other pending updates (especially after power on which can generate
 	//    "unavailable time" type problems for other updates)
-	functionStackFunction := "UpdateDoOnce"
+	functionStackFunction := "updateDoOnce"
 	if checkFunctionAppend(functionStackFunction, endPoint, socketKey) {
 		if arg2 != "" {
 			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, arg1, arg2, newState})
@@ -1100,7 +1100,7 @@ func SetDeviceStateEndpoint(socketKey string, endpoint string, value string) {
 }
 
 func updateDoOnce(arguments []string) bool {
-	function := "UpdateDoOnce"
+	function := "updateDoOnce"
 
 	socketKey := arguments[0]
 	Log(fmt.Sprintf(function+" - got arguments: %v", arguments))
