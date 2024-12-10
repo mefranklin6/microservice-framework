@@ -871,18 +871,18 @@ func handleGet(context echo.Context) error {
 	// Make sure we will refresh this value in the cache regardless of whether or not this was a cache hit.
 	functionStackFunction := "endPointRefresh"
 	// Note that the repetition of endPoint in the parameters is necessary - each value is used in a different layer
-	if retCode != http.StatusOK {
-		// Cache miss - need to get a refresh ASAP, but after any pending updates
-		if arg2 != "" {
-			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
-		} else if arg1 != "" {
-			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1})
+	if checkFunctionAppend(functionStackFunction, endPoint, socketKey) {
+		if retCode != http.StatusOK {
+			// Cache miss - need to get a refresh ASAP, but after any pending updates
+			if arg2 != "" {
+				functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
+			} else if arg1 != "" {
+				functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1})
+			} else {
+				functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, endPoint, setting})
+			}
 		} else {
-			functionStackInsertAfterUpdates([]string{functionStackFunction, endPoint, socketKey, endPoint, setting})
-		}
-	} else {
-		// Cache hit - schedule a normal refresh for later
-		if checkFunctionAppend(functionStackFunction, endPoint, socketKey) {
+			// Cache hit - schedule a normal refresh for later
 			if arg2 != "" {
 				functionStackAppend([]string{functionStackFunction, endPoint, socketKey, setting, endPoint, arg1, arg2})
 			} else if arg1 != "" {
