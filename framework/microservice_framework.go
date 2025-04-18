@@ -52,7 +52,7 @@ var deviceStates = make(map[string]map[string]string)
 var deviceStatesMutex sync.Mutex
 var deviceErrors = make(map[string]map[string]string)
 var deviceErrorsMutex sync.Mutex
-var lastQueried = make(map[string]time.Time)
+var LastQueried = make(map[string]time.Time)
 var lastQueriedMutex sync.Mutex
 var connectionsUDP = make(map[string]*net.UDPConn)
 var connectionsTCP = make(map[string]*net.TCPConn)
@@ -790,7 +790,7 @@ func getErrors(context echo.Context) error {
 	// Log("getErrors - " + socketKey)
 
 	lastQueriedMutex.Lock()
-	lastQueried[socketKey] = time.Now()
+	LastQueried[socketKey] = time.Now()
 	lastQueriedMutex.Unlock()
 
 	httpResponseCode := http.StatusOK
@@ -851,7 +851,7 @@ func handleGet(context echo.Context) error {
 	}
 
 	lastQueriedMutex.Lock()
-	lastQueried[socketKey] = time.Now() // extend the refresh cycle
+	LastQueried[socketKey] = time.Now() // extend the refresh cycle
 	lastQueriedMutex.Unlock()
 
 	//  If we haven't already gotten a value for this end point we need to respond that it is unknown (HTTP 204)
@@ -981,7 +981,7 @@ func endPointRefresh(arguments []string) bool {
 	// Log(fmt.Sprintf(function + " - NOW: %v LAST QUERIED: %v", time.Now(), lastQueried[socketKey]))
 	// renew the refresh cycle if appropriate
 	if !CheckForEndPointInCache(socketKey, endPoint) ||
-		time.Duration(time.Now().Sub(lastQueried[socketKey])) < time.Duration(time.Duration(KeepRefreshingFor)*time.Second) {
+		time.Duration(time.Now().Sub(LastQueried[socketKey])) < time.Duration(time.Duration(KeepRefreshingFor)*time.Second) {
 		Log(function + " - " + socketKey + " - ef3241 device freshly in use, we'll update it again later")
 		if !refreshError && checkFunctionAppend(function, endPoint, socketKey) {
 			functionStackAppend(append([]string{function, endPoint}, arguments...))
@@ -1021,7 +1021,7 @@ func handleUpdate(context echo.Context) error {
 
 	// Extend the refresh cycle
 	lastQueriedMutex.Lock()
-	lastQueried[socketKey] = time.Now()
+	LastQueried[socketKey] = time.Now()
 	// Log("PUT " + fmt.Sprintf("time.Now(): %v lastQueried[socketKey]: %v", time.Now(), lastQueried[socketKey]))
 	lastQueriedMutex.Unlock()
 
