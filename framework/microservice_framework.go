@@ -1,4 +1,4 @@
-//version 1.1.8
+//version 1.2.8
 
 package framework
 
@@ -26,12 +26,13 @@ import (
 var UseUDP = false
 var UseTelnet = false
 var KeepAlive = false
-var ConnectTimeout = 5          // seconds
-var ReadTimeout = 5             // seconds
-var TryReadTimeout = 150        // milliseconds
-var WriteTimeout = 5            // seconds
-var RefreshDataPointsEvery = 50 // seconds (should be 50 after debugging so it's a little faster than the orchestrator gets)
-var KeepRefreshingFor = 300     // seconds (should be 300 after debugging)
+var DeviceWillCloseConnection = false // if KeepAlive, use this for devices that close the connection on their own
+var ConnectTimeout = 5                // seconds
+var ReadTimeout = 5                   // seconds
+var TryReadTimeout = 150              // milliseconds
+var WriteTimeout = 5                  // seconds
+var RefreshDataPointsEvery = 50       // seconds (should be 50 after debugging so it's a little faster than the orchestrator gets)
+var KeepRefreshingFor = 300           // seconds (should be 300 after debugging)
 var ReadNoSleepTries = 5
 var MaxReadTries = 6
 var ReadFailSleep = 500 // milliseconds
@@ -411,6 +412,23 @@ func CheckForEndPointInCache(socketKey string, endPoint string) bool {
 		return false
 	}
 	// Log(function + " - endpoint was in the cache")
+
+	return true
+}
+
+func CheckForDeviceInCache(socketKey string) bool {
+	//function := "CheckForDeviceInCache"
+
+	deviceStatesMutex.Lock()
+	defer deviceStatesMutex.Unlock()
+
+	//Log(function + " - socketKey: " + socketKey)
+	//Log(fmt.Sprintf(function+" - deviceStates: %v", deviceStates))
+	if _, ok := deviceStates[socketKey]; !ok {
+		//Log(function + " - " + socketKey + " - first we hear of device")
+		return false // wasn't in cache
+	}
+	//Log(function + " - device was in the cache")
 
 	return true
 }
@@ -850,6 +868,13 @@ func handleGet(context echo.Context) error {
 		return context.JSON(http.StatusInternalServerError, "couldn't get a socket key with error: "+err.Error())
 	}
 
+	if KeepAlive && DeviceWillCloseConnection {
+		if !CheckForDeviceInCache(socketKey) {
+			Log(function + " - " + socketKey + " - 8s5dfg# device not in cache, assuming it closed the connection")
+			CloseSocketConnection(socketKey)
+		}
+	}
+
 	lastQueriedMutex.Lock()
 	lastQueried[socketKey] = time.Now() // extend the refresh cycle
 	lastQueriedMutex.Unlock()
@@ -990,6 +1015,10 @@ func endPointRefresh(arguments []string) bool {
 		Log(function + " - " + socketKey + " " + endPoint + " - device not freshly in use, no need to keep refreshing it")
 		deviceStatesMutex.Lock()
 		delete(deviceStates[socketKey], endPoint)
+		if len(deviceStates[socketKey]) == 0 {
+			delete(deviceStates, socketKey)
+			Log(function + " - " + socketKey + " - no endpoints being refreshed, removing device from cache")
+		}
 		deviceStatesMutex.Unlock()
 	}
 	lastQueriedMutex.Unlock()
