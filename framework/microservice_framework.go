@@ -869,7 +869,7 @@ func handleGet(context echo.Context) error {
 	}
 
 	if KeepAlive && DeviceWillCloseConnection {
-		if !CheckForDeviceInCache(socketKey) {
+		if !checkForDeviceInCache(socketKey) {
 			Log(function + " - " + socketKey + " - 8s5dfg# device not in cache, assuming it closed the connection")
 			CloseSocketConnection(socketKey)
 		}
