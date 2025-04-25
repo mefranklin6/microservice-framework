@@ -416,8 +416,8 @@ func CheckForEndPointInCache(socketKey string, endPoint string) bool {
 	return true
 }
 
-func CheckForDeviceInCache(socketKey string) bool {
-	//function := "CheckForDeviceInCache"
+func checkForDeviceInCache(socketKey string) bool {
+	//function := "checkForDeviceInCache"
 
 	deviceStatesMutex.Lock()
 	defer deviceStatesMutex.Unlock()
