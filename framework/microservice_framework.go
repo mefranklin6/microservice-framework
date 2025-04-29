@@ -26,13 +26,13 @@ import (
 var UseUDP = false
 var UseTelnet = false
 var KeepAlive = false
-var DeviceWillCloseConnection = false // if KeepAlive, use this for devices that close the connection on their own
-var ConnectTimeout = 5                // seconds
-var ReadTimeout = 5                   // seconds
-var TryReadTimeout = 150              // milliseconds
-var WriteTimeout = 5                  // seconds
-var RefreshDataPointsEvery = 50       // seconds (should be 50 after debugging so it's a little faster than the orchestrator gets)
-var KeepRefreshingFor = 300           // seconds (should be 300 after debugging)
+var DisconnectAfterDoneRefreshing = false // if KeepAlive, close the connection when the device is no longer being refreshed
+var ConnectTimeout = 5                    // seconds
+var ReadTimeout = 5                       // seconds
+var TryReadTimeout = 150                  // milliseconds
+var WriteTimeout = 5                      // seconds
+var RefreshDataPointsEvery = 50           // seconds (should be 50 after debugging so it's a little faster than the orchestrator gets)
+var KeepRefreshingFor = 300               // seconds (should be 300 after debugging)
 var ReadNoSleepTries = 5
 var MaxReadTries = 6
 var ReadFailSleep = 500 // milliseconds
@@ -868,7 +868,7 @@ func handleGet(context echo.Context) error {
 		return context.JSON(http.StatusInternalServerError, "couldn't get a socket key with error: "+err.Error())
 	}
 
-	if KeepAlive && DeviceWillCloseConnection {
+	if KeepAlive && DisconnectAfterDoneRefreshing {
 		if !checkForDeviceInCache(socketKey) {
 			Log(function + " - " + socketKey + " - 8s5dfg# device not in cache, assuming it closed the connection")
 			CloseSocketConnection(socketKey)
