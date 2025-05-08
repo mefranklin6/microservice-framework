@@ -26,6 +26,7 @@ import (
 var UseUDP = false
 var UseTelnet = false
 var KeepAlive = false
+var KeepAlivePolling = false              // set to true if keep alive polling is implemented in the microservice
 var DisconnectAfterDoneRefreshing = false // if KeepAlive, close the connection when the device is no longer being refreshed
 var ConnectTimeout = 5                    // seconds
 var ReadTimeout = 5                       // seconds
@@ -868,7 +869,7 @@ func handleGet(context echo.Context) error {
 		return context.JSON(http.StatusInternalServerError, "couldn't get a socket key with error: "+err.Error())
 	}
 
-	if KeepAlive && DisconnectAfterDoneRefreshing {
+	if KeepAlive && DisconnectAfterDoneRefreshing && !KeepAlivePolling {
 		if !checkForDeviceInCache(socketKey) {
 			Log(function + " - " + socketKey + " - 8s5dfg# device not in cache, assuming it closed the connection")
 			CloseSocketConnection(socketKey)
