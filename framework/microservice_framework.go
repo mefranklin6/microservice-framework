@@ -938,6 +938,16 @@ var callDevice = true // Hack to get around foibles of golang panic processing:
 
 func endPointRefresh(arguments []string) bool {
 	function := "endPointRefresh"
+
+	defer func() {
+		if r := recover(); r != nil {
+			retMsg := fmt.Sprintf(function+" - n3novieev unhandled panic: %v stack: %v restarting function stack processor", r, string(debug.Stack()[:]))
+			AddToErrors("all", retMsg)
+			Log("Restarting function stack processor")
+			go functionStackProcessor()
+		}
+	}()
+
 	refreshError := false
 
 	dataUpdated := false
@@ -1140,6 +1150,15 @@ func SetDeviceStateEndpoint(socketKey string, endpoint string, value string) {
 
 func updateDoOnce(arguments []string) bool {
 	function := "updateDoOnce"
+
+	defer func() {
+		if r := recover(); r != nil {
+			retMsg := fmt.Sprintf(function+" - babreabds unhandled panic: %v stack: %v restarting function stack processor", r, string(debug.Stack()[:]))
+			AddToErrors("all", retMsg)
+			Log("Restarting function stack processor")
+			go functionStackProcessor()
+		}
+	}()
 
 	socketKey := arguments[0]
 	Log(fmt.Sprintf(function+" - got arguments: %v", arguments))
