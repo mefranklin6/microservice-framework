@@ -1,4 +1,4 @@
-//version 1.2.9
+//version 1.2.10
 
 package framework
 
@@ -25,6 +25,7 @@ import (
 // Use setFrameworkGlobals() in microservice.go to change these variables.
 var UseUDP = false
 var UseTelnet = false
+var AllowSSH = false // if true, will try SSH if Telnet or raw TCP is not available
 var KeepAlive = false
 var KeepAlivePolling = false              // set to true if keep alive polling is implemented in the microservice
 var DisconnectAfterDoneRefreshing = false // if KeepAlive, close the connection when the device is no longer being refreshed
@@ -40,6 +41,7 @@ var ReadFailSleep = 500 // milliseconds
 var FunctionStackFull = 100
 var ReportOlderInterval = 120 // seconds (used to throttle function stack errors when network connectivity is gone)
 var DefaultSocketPort int
+var DefaultSSHPort = 22 // Default is 22.  Extron uses 22023
 var MicroserviceName = ""
 
 // All possible values are "Don't add another instance", "Remove older instance", or "Add another instance"
@@ -91,6 +93,31 @@ func RegisterMainGetFunc(fn MainGetFunc) {
 	doDeviceSpecificGet = fn
 }
 
+// Validates the framework globals and tunables upon startup
+func validGlobals() bool {
+	if UseUDP && UseTelnet {
+		Log("Cannot use both UDP and Telnet at the same time")
+		return false
+	}
+	if UseUDP && AllowSSH {
+		Log("Cannot use both UDP and SSH at the same time")
+		return false
+	}
+	if DisconnectAfterDoneRefreshing && !KeepAlive {
+		Log("DisconnectAfterDoneRefreshing can only be true if KeepAlive is also true")
+		return false
+	}
+	if DisconnectAfterDoneRefreshing && KeepAlivePolling {
+		Log("DisconnectAfterDoneRefreshing cannot be true if KeepAlivePolling is also true")
+		return false
+	}
+	if DefaultSocketPort < 1 || DefaultSocketPort > 65535 {
+		Log("DefaultSocketPort must be between 1 and 65535")
+		return false
+	}
+	return true
+}
+
 // Function to register the main package function
 func RegisterMainSetFunc(fn MainSetFunc) {
 	doDeviceSpecificSet = fn
@@ -127,6 +154,11 @@ func Startup() {
 			AddToErrors("all", retMsg)
 		}
 	}()
+
+	if !validGlobals() {
+		AddToErrors("all", function+" - invalid configuration, cannot start")
+		return
+	}
 
 	Log(MicroserviceName + " using OpenAV microservice framework")
 
