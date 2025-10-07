@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo"
+	"golang.org/x/crypto/ssh"
 )
 
 // tunables
@@ -60,9 +61,10 @@ var lastQueried = make(map[string]time.Time)
 var lastQueriedMutex sync.Mutex
 var connectionsUDP = make(map[string]*net.UDPConn)
 var connectionsTCP = make(map[string]*net.TCPConn)
+var connectionsSSH = make(map[string]*net.TCPConn)
 
 // var connections = make(map[string]*net.Conn) // we'll set this to one of the above at runtime
-var connectionsMutex sync.Mutex
+var connectionsMutex sync.Mutex // Mutex for connectionsUDP, connectionsTCP and connectionsSSH
 var deviceMutexes = make(map[string]sync.Mutex)
 var devicesLock = make(map[string]bool)
 var devicesLockMutex sync.Mutex
@@ -93,7 +95,7 @@ func RegisterMainGetFunc(fn MainGetFunc) {
 	doDeviceSpecificGet = fn
 }
 
-// Validates the framework globals and tunables upon startup
+// Validates the globals and tunables upon startup
 func validGlobals() bool {
 	if UseUDP && UseTelnet {
 		Log("Cannot use both UDP and Telnet at the same time")
@@ -494,14 +496,82 @@ func checkFunctionAppend(functionToCall string, endPoint string, socketKey strin
 	return true
 }
 
+func establishSSHConnection(socketKey string, socketAddress string) bool {
+	function := "establishSSHConnection"
+	Log(function + " - " + socketKey + " - using SSH transport")
+	// Parse credentials for SSH
+	username := ""
+	password := ""
+	if strings.Count(socketKey, "@") == 1 {
+		creds := strings.Split(socketKey, "@")[0]
+		if strings.Count(creds, ":") == 1 {
+			username = strings.Split(creds, ":")[0]
+			password = strings.Split(creds, ":")[1]
+		}
+	}
+	if username == "" {
+		username = "admin" // default username if not specified
+		Log(function + " - " + socketKey + " - no username specified, using default: " + username)
+	}
+	// Ensure we have credentials; otherwise we won't attempt any auth methods and the server will reject with "attempted methods [none]".
+	if password == "" {
+		AddToErrors(socketKey, function+" - "+socketKey+" - SSH password not provided; include username:password@host[:port] in request or configure credentials")
+		return false
+	}
+	// Setup SSH client config
+	sshConfig := &ssh.ClientConfig{
+		User: username,
+		Auth: []ssh.AuthMethod{
+			// Try both password and keyboard-interactive to maximize compatibility
+			ssh.Password(password),
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range questions {
+					answers[i] = password
+				}
+				return answers, nil
+			}),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         time.Duration(ConnectTimeout) * time.Second,
+	}
+	// Create underlying TCP connection with timeout to control dial timing
+	conn, err := net.DialTimeout("tcp", socketAddress, time.Duration(ConnectTimeout)*time.Second)
+	if err != nil {
+		AddToErrors(socketKey, function+" - "+socketKey+" - SSH dial error: "+err.Error())
+		return false
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, socketAddress, sshConfig)
+	if err != nil {
+		AddToErrors(socketKey, function+" - "+socketKey+" - SSH handshake error: "+err.Error())
+		_ = conn.Close()
+		return false
+	}
+	client := ssh.NewClient(c, chans, reqs)
+	// Test connectivity by creating a quick test session
+	session, err := client.NewSession()
+	if err != nil {
+		AddToErrors(socketKey, function+" - "+socketKey+" - SSH test session error: "+err.Error())
+		_ = client.Close()
+		return false
+	}
+	// Close the test session; we only needed it to verify connectivity
+	_ = session.Close()
+
+	// Success: store SSH client for per-command sessions
+	connectionsSSH[socketKey] = client
+	Log("establishSocketConnectionIfNeeded - " + socketKey + " - SSH connection successfully established")
+	return true
+}
+
 func establishSocketConnectionIfNeeded(socketKey string) bool {
 	function := "establishSocketConnectionIfNeeded"
-
+	connected := false
 	if internalConnectionsMapExists(socketKey) {
-		Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection already in table")
+		Log(function + " - " + socketKey + " - connection already in table")
 		return true
 	} else {
-		Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection needs to be established")
+		Log(function + " - " + socketKey + " - connection needs to be established")
 		socketAddress := socketKey
 		if strings.Count(socketKey, "@") == 1 {
 			socketAddress = strings.Split(socketKey, "@")[1]
@@ -514,31 +584,36 @@ func establishSocketConnectionIfNeeded(socketKey string) bool {
 			locaddr, err := net.ResolveUDPAddr("udp", listeningPort)
 			connection, err := net.ListenUDP("udp", locaddr)
 			if err != nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - 423fsdaa error connecting: "+err.Error())
+				AddToErrors(socketKey, function+" - "+socketKey+" - 423fsdaa error connecting UDP: "+err.Error())
 				return false
 			} else if connection == nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - dbtw33 no error connecting but connection is still nil")
+				AddToErrors(socketKey, function+" - "+socketKey+" - dbtw33 no error connecting UDP but connection is still nil")
 				return false
 			} else {
-				Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection successfully established")
+				Log(function + " - " + socketKey + " - UDP connection successfully established")
 				connectionsUDP[socketKey] = connection
 			}
-		} else { // TCP
+		} else { // TCP.  Try it first before SSH if AllowSSH
 			d := net.Dialer{Timeout: time.Duration(ConnectTimeout) * time.Second}
 			connection, err := d.Dial("tcp", socketAddress)
 			if err != nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - q43fdsa error connecting: "+err.Error())
+				AddToErrors(socketKey, function+" - "+socketKey+" - q43fdsa error connecting TCP: "+err.Error())
 				return false
 			} else if connection == nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - bfdwdf3 no error connecting but connection is still nil")
+				AddToErrors(socketKey, function+" - "+socketKey+" - bfdwdf3 no error connecting TCP but connection is still nil")
 				return false
 			} else {
-				Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection successfully established")
+				connected = true
+				Log(function + " - " + socketKey + " - TCP connection successfully established")
 				connectionsTCP[socketKey] = connection.(*net.TCPConn)
 
 				// TCP success so make a reader
 				global_reader[socketKey] = bufio.NewReader(connectionsTCP[socketKey])
 			}
+		}
+		// If we got here and the SSH flag is set, try SSH
+		if !connected && AllowSSH {
+			establishSSHConnection(socketKey, socketAddress)
 		}
 	}
 
@@ -558,16 +633,17 @@ func CloseSocketConnection(socketKey string) {
 }
 
 func internalCloseSocketConnection(socketKey string) bool {
-	if internalConnectionsMapExists(socketKey) {
-		if UseUDP {
-			connectionsUDP[socketKey].Close()
-			delete(connectionsUDP, socketKey)
-		} else {
-			connectionsTCP[socketKey].Close()
-			delete(connectionsTCP, socketKey)
+	switch internalGetDeviceProtocol(socketKey) {
+	case "UDP":
+		connectionsUDP[socketKey].Close()
+		delete(connectionsUDP, socketKey)
+	case "TCP":
+		connectionsTCP[socketKey].Close()
+		delete(connectionsTCP, socketKey)
+	case "SSH":
+		if client, ok := connectionsSSH[socketKey]; ok && client != nil {
+			_ = client.Close()
 		}
-		// Log("internalCloseSocketConnection - " + socketKey + " - connection closed")
-		return true
 	}
 	// we succeed no matter what - either it was gone already or we closed it or there never
 	//     was a connection to close (e.g. Bravia)
@@ -771,18 +847,56 @@ func CheckConnectionsMapExists(socketKey string) bool {
 // Expected to be used inside the framework. Locking/unlocking happens outside this function.
 func internalConnectionsMapExists(socketKey string) bool {
 	if UseUDP {
-		if _, ok := connectionsUDP[socketKey]; !ok {
-			//Log("q3fasv UDP not connected")
-			return false
+		if _, ok := connectionsUDP[socketKey]; ok {
+			return true
 		}
-	} else { // TCP
-		if _, ok := connectionsTCP[socketKey]; !ok {
-			//Log("nhh45e456 TCP not connected")
-			return false
+	} else { // TCP or SSH (if AllowSSH)
+		if _, ok := connectionsTCP[socketKey]; ok {
+			return true
+		}
+		if AllowSSH { // if we don't expect to see SSH, don't check for performance reasons
+			if _, ok := connectionsSSH[socketKey]; ok {
+				return true
+			}
 		}
 	}
-	// Log("Socket Key has connection")
-	return true // if we got here, there is already a map created
+	return false
+}
+
+// External function to get the connection protocol of the socketKey
+// returns "UDP", "TCP", "Telnet", "SSH" or "none"
+func GetDeviceProtocol(socketKey string) string {
+	connectionsMutex.Lock()
+	defer connectionsMutex.Unlock()
+	return internalGetDeviceProtocol(socketKey)
+}
+
+// Expected to be used inside the framework. Locking/unlocking happens outside this function.
+func internalGetDeviceProtocol(socketKey string) string {
+	//function := "internalGetDeviceProtocol"
+	if UseUDP {
+		if _, ok := connectionsUDP[socketKey]; ok {
+			//Log(function + socketKey + "Connection is UDP")
+			return "UDP"
+		}
+	} else if AllowSSH {
+		if _, ok := connectionsSSH[socketKey]; ok {
+			//Log(function + socketKey + "Connection is SSH")
+			return "SSH"
+		}
+	} else {
+		if _, ok := connectionsTCP[socketKey]; ok {
+			if UseTelnet {
+				//Log(function + socketKey + "Connection is Telnet")
+				return "Telnet"
+			} else {
+				//Log(function + socketKey + "Connection is TCP")
+				return "TCP"
+			}
+		}
+	}
+	//Log(function + socketKey + "No connection found")
+	return "none"
 }
 
 func Log(text string) {
