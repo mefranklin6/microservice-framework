@@ -26,7 +26,8 @@ import (
 // Use setFrameworkGlobals() in microservice.go to change these variables.
 var UseUDP = false
 var UseTelnet = false
-var AllowSSH = false // if true, will try SSH if Telnet or raw TCP is not available
+var AllowSSH = false                // if true, will try SSH if Telnet or raw TCP is not available
+var SSHMode = "per-command session" // Options are "per-command session"
 var KeepAlive = false
 var KeepAlivePolling = false              // set to true if keep alive polling is implemented in the microservice
 var DisconnectAfterDoneRefreshing = false // if KeepAlive, close the connection when the device is no longer being refreshed
@@ -61,7 +62,7 @@ var lastQueried = make(map[string]time.Time)
 var lastQueriedMutex sync.Mutex
 var connectionsUDP = make(map[string]*net.UDPConn)
 var connectionsTCP = make(map[string]*net.TCPConn)
-var connectionsSSH = make(map[string]*net.TCPConn)
+var connectionsSSH = make(map[string]*ssh.Client)
 
 // var connections = make(map[string]*net.Conn) // we'll set this to one of the above at runtime
 var connectionsMutex sync.Mutex // Mutex for connectionsUDP, connectionsTCP and connectionsSSH
@@ -643,11 +644,65 @@ func internalCloseSocketConnection(socketKey string) bool {
 	case "SSH":
 		if client, ok := connectionsSSH[socketKey]; ok && client != nil {
 			_ = client.Close()
+			delete(connectionsSSH, socketKey)
 		}
 	}
 	// we succeed no matter what - either it was gone already or we closed it or there never
 	//     was a connection to close (e.g. Bravia)
 	return true
+}
+
+// Internal for 'per-command session' SSH mode
+// Must be called with connectionsMutex held
+func runSingleSSHCommand(socketKey string, command string) (string, error) {
+	//function := "runSingleSSHCommand"
+	client, ok := connectionsSSH[socketKey]
+	if !ok || client == nil {
+		return "", fmt.Errorf("SSH client not available")
+	}
+
+	// Create a new session for this command
+	session, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("failed to create session: %v", err)
+	}
+	defer session.Close()
+
+	// Run the command and get combined output
+	output, err := session.CombinedOutput(command)
+	if err != nil {
+		// Command may have failed, but we still return output if any
+		if len(output) > 0 {
+			return strings.TrimSpace(string(output)), nil
+		}
+		return "", fmt.Errorf("command failed: %v", err)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// Internal utility to handle writing to SSH
+// Must be called with connectionsMutex held
+func writeLineToSSHSocket(socketKey string, line string) bool {
+	function := "writeLineToSSHSocket"
+	if SSHMode == "per-command session" {
+		output, err := runSingleSSHCommand(socketKey, strings.TrimSpace(line))
+		if err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - ssh command error: "+err.Error())
+			// Don't close connection on command failure, just report error
+			// Store empty result so read returns empty
+			global_reader[socketKey] = bufio.NewReader(strings.NewReader(""))
+			return false
+		}
+		// Store output in a string reader for the read phase
+		global_reader[socketKey] = bufio.NewReader(strings.NewReader(output + string(byte(GlobalDelimiter))))
+		Log(function + " - " + socketKey + " - SSH command executed, output cached")
+		return true
+	} else {
+		// Add future modes here
+		AddToErrors(socketKey, function+" - Not Implemented!  SSHMode only supports 'per-command session'")
+		return false
+	}
 }
 
 func WriteLineToSocket(socketKey string, line string) bool {
@@ -661,6 +716,10 @@ func WriteLineToSocket(socketKey string, line string) bool {
 		if !establishSocketConnectionIfNeeded(socketKey) {
 			return addToErrorsAndReturn("all", function+" - "+socketKey+" - bsfd456ty connection not in table and could not establish it", false)
 		}
+	}
+
+	if AllowSSH && internalGetDeviceProtocol(socketKey) == "SSH" {
+		return writeLineToSSHSocket(socketKey, line)
 	}
 
 	if UseUDP {
@@ -734,6 +793,33 @@ func ReadLineFromSocket(socketKey string) string {
 	return msg
 }
 
+func tryReadSSHLineFromSocket(socketKey string) string {
+	function := "tryReadSSHLineFromSocket"
+	bytesRead := 0
+	// Read from cached output (stored during write phase)
+	r, ok := global_reader[socketKey]
+	if !ok || r == nil {
+		Log(function + " - " + socketKey + " - no cached SSH output")
+		return ""
+	}
+	// Read the cached response
+	data, err := r.ReadBytes(byte(GlobalDelimiter))
+	if err != nil && err != io.EOF {
+		Log(function + " - " + socketKey + " - error reading cached SSH output")
+		return ""
+	}
+	if len(data) == 0 {
+		Log(function + " - " + socketKey + " - empty cached SSH output")
+		return ""
+	}
+	ret := strings.TrimSpace(string(data))
+	bytesRead = len(ret)
+	Log(fmt.Sprintf("  "+function+" - "+socketKey+" - read %d bytes (SSH): %v", bytesRead, ret))
+	// Clear the cached output
+	delete(global_reader, socketKey)
+	return ret
+}
+
 // This does the work of reading a line with a short timeout.  It can see if there is more pending input from the socket.
 func tryReadLineFromSocket(socketKey string) string {
 	function := "TryReadLineFromSocket"
@@ -746,6 +832,13 @@ func tryReadLineFromSocket(socketKey string) string {
 			AddToErrors("all", function+" - ljk54v "+socketKey+" - connection not in table and could not establish it")
 			return ""
 		}
+	}
+
+	if AllowSSH && internalGetDeviceProtocol(socketKey) == "SSH" {
+		sshRet := tryReadSSHLineFromSocket(socketKey)
+		Log("  " + function + " - vae345c " + socketKey + " - read : " + sshRet)
+		return sshRet
+
 	}
 
 	var err error = nil
