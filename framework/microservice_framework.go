@@ -966,29 +966,31 @@ func GetDeviceProtocol(socketKey string) string {
 
 // Expected to be used inside the framework. Locking/unlocking happens outside this function.
 func internalGetDeviceProtocol(socketKey string) string {
-	//function := "internalGetDeviceProtocol"
+	function := "internalGetDeviceProtocol"
 	if UseUDP {
 		if _, ok := connectionsUDP[socketKey]; ok {
-			//Log(function + socketKey + "Connection is UDP")
+			Log(function + " - " + socketKey + "- Connection is UDP")
 			return "UDP"
 		}
-	} else if AllowSSH {
-		if _, ok := connectionsSSH[socketKey]; ok {
-			//Log(function + socketKey + "Connection is SSH")
-			return "SSH"
-		}
-	} else {
+		return "none"
+	} else { // Some flavor of TCP
 		if _, ok := connectionsTCP[socketKey]; ok {
 			if UseTelnet {
-				//Log(function + socketKey + "Connection is Telnet")
+				Log(function + " - " + socketKey + " - Connection is Telnet")
 				return "Telnet"
 			} else {
-				//Log(function + socketKey + "Connection is TCP")
+				Log(function + " - " + socketKey + " - Connection is TCP")
 				return "TCP"
 			}
 		}
+		if AllowSSH {
+			if _, ok := connectionsSSH[socketKey]; ok {
+				Log(function + " - " + socketKey + " - Connection is SSH")
+				return "SSH"
+			}
+		}
 	}
-	//Log(function + socketKey + "No connection found")
+	Log(function + " - " + socketKey + " - No connection found")
 	return "none"
 }
 
