@@ -24,9 +24,8 @@ import (
 
 // tunables
 // Use setFrameworkGlobals() in microservice.go to change these variables.
-var UseUDP = false
+var UseUDP = false // Legacy
 var UseTelnet = false
-var AllowSSH = false                // if true, will try SSH if Telnet or raw TCP is not available
 var SSHMode = "per-command session" // Options are "per-command session"
 var KeepAlive = false
 var KeepAlivePolling = false              // set to true if keep alive polling is implemented in the microservice
@@ -102,22 +101,15 @@ func validGlobals() bool {
 		Log("Cannot use both UDP and Telnet at the same time")
 		return false
 	}
-	if UseUDP && AllowSSH {
-		Log("Cannot use both UDP and SSH at the same time")
-		return false
-	}
 	if DisconnectAfterDoneRefreshing && !KeepAlive {
 		Log("DisconnectAfterDoneRefreshing can only be true if KeepAlive is also true")
-		return false
-	}
-	if DisconnectAfterDoneRefreshing && KeepAlivePolling {
-		Log("DisconnectAfterDoneRefreshing cannot be true if KeepAlivePolling is also true")
 		return false
 	}
 	if DefaultSocketPort < 1 || DefaultSocketPort > 65535 {
 		Log("DefaultSocketPort must be between 1 and 65535")
 		return false
 	}
+	Log("''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''")
 	return true
 }
 
@@ -567,54 +559,61 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 
 func establishSocketConnectionIfNeeded(socketKey string) bool {
 	function := "establishSocketConnectionIfNeeded"
-	connected := false
+
 	if internalConnectionsMapExists(socketKey) {
 		Log(function + " - " + socketKey + " - connection already in table")
 		return true
+	}
+
+	// Extract protocol if present
+	protocol := ""
+	socketAddress := socketKey
+
+	if strings.Contains(socketKey, "://") {
+		parts := strings.SplitN(socketKey, "://", 2)
+		protocol = parts[0]
+		socketAddress = parts[1]
+	}
+
+	if strings.Count(socketAddress, "@") == 1 {
+		socketAddress = strings.Split(socketAddress, "@")[1]
+	}
+
+	// Connect based on explicit protocol or fall back to global settings
+	if protocol == "udp" || (protocol == "" && UseUDP) {
+		// UDP connection logic
+		//We use ListenUDP instead of Dial in case a UDP device responds from a different port than the one we send to.
+		listeningPort := ":" + fmt.Sprint(DefaultSocketPort)
+		locaddr, err := net.ResolveUDPAddr("udp", listeningPort)
+		connection, err := net.ListenUDP("udp", locaddr)
+		if err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - 423fsdaa error connecting UDP: "+err.Error())
+			return false
+		} else if connection == nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - dbtw33 no error connecting UDP but connection is still nil")
+			return false
+		} else {
+			Log(function + " - " + socketKey + " - UDP connection successfully established")
+			connectionsUDP[socketKey] = connection
+		}
+	} else if protocol == "ssh" {
+		if !establishSSHConnection(socketKey, socketAddress) {
+			return false
+		}
 	} else {
-		Log(function + " - " + socketKey + " - connection needs to be established")
-		socketAddress := socketKey
-		if strings.Count(socketKey, "@") == 1 {
-			socketAddress = strings.Split(socketKey, "@")[1]
-		}
-
-		if UseUDP {
-			//We use ListenUDP instead of Dial in case a UDP device responds from a different port than the one we send to.
-			//Seen with Sony cameras.
-			listeningPort := ":" + fmt.Sprint(DefaultSocketPort)
-			locaddr, err := net.ResolveUDPAddr("udp", listeningPort)
-			connection, err := net.ListenUDP("udp", locaddr)
-			if err != nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - 423fsdaa error connecting UDP: "+err.Error())
-				return false
-			} else if connection == nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - dbtw33 no error connecting UDP but connection is still nil")
-				return false
-			} else {
-				Log(function + " - " + socketKey + " - UDP connection successfully established")
-				connectionsUDP[socketKey] = connection
-			}
-		} else { // TCP.  Try it first before SSH if AllowSSH
-			d := net.Dialer{Timeout: time.Duration(ConnectTimeout) * time.Second}
-			connection, err := d.Dial("tcp", socketAddress)
-			if err != nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - q43fdsa error connecting TCP: "+err.Error())
-				return false
-			} else if connection == nil {
-				AddToErrors(socketKey, function+" - "+socketKey+" - bfdwdf3 no error connecting TCP but connection is still nil")
-				return false
-			} else {
-				connected = true
-				Log(function + " - " + socketKey + " - TCP connection successfully established")
-				connectionsTCP[socketKey] = connection.(*net.TCPConn)
-
-				// TCP success so make a reader
-				global_reader[socketKey] = bufio.NewReader(connectionsTCP[socketKey])
-			}
-		}
-		// If we got here and the SSH flag is set, try SSH
-		if !connected && AllowSSH {
-			establishSSHConnection(socketKey, socketAddress)
+		// TCP/Telnet connection (default behavior)
+		d := net.Dialer{Timeout: time.Duration(ConnectTimeout) * time.Second}
+		connection, err := d.Dial("tcp", socketAddress)
+		if err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - q43fdsa error connecting TCP: "+err.Error())
+			return false
+		} else if connection == nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - bfdwdf3 no error connecting TCP but connection is still nil")
+			return false
+		} else {
+			Log(function + " - " + socketKey + " - TCP connection successfully established")
+			connectionsTCP[socketKey] = connection.(*net.TCPConn)
+			global_reader[socketKey] = bufio.NewReader(connectionsTCP[socketKey])
 		}
 	}
 
@@ -718,7 +717,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 		}
 	}
 
-	if AllowSSH && internalGetDeviceProtocol(socketKey) == "SSH" {
+	if internalGetDeviceProtocol(socketKey) == "SSH" {
 		return writeLineToSSHSocket(socketKey, line)
 	}
 
@@ -834,7 +833,7 @@ func tryReadLineFromSocket(socketKey string) string {
 		}
 	}
 
-	if AllowSSH && internalGetDeviceProtocol(socketKey) == "SSH" {
+	if internalGetDeviceProtocol(socketKey) == "SSH" {
 		sshRet := tryReadSSHLineFromSocket(socketKey)
 		Log("  " + function + " - vae345c " + socketKey + " - read : " + sshRet)
 		return sshRet
@@ -943,14 +942,12 @@ func internalConnectionsMapExists(socketKey string) bool {
 		if _, ok := connectionsUDP[socketKey]; ok {
 			return true
 		}
-	} else { // TCP or SSH (if AllowSSH)
+	} else { // TCP, SSH, or Telnet
 		if _, ok := connectionsTCP[socketKey]; ok {
 			return true
 		}
-		if AllowSSH { // if we don't expect to see SSH, don't check for performance reasons
-			if _, ok := connectionsSSH[socketKey]; ok {
-				return true
-			}
+		if _, ok := connectionsSSH[socketKey]; ok {
+			return true
 		}
 	}
 	return false
@@ -965,33 +962,26 @@ func GetDeviceProtocol(socketKey string) string {
 }
 
 // Expected to be used inside the framework. Locking/unlocking happens outside this function.
+// Returns "TCP", "Telnet", "UDP", "SSH" or "none"
 func internalGetDeviceProtocol(socketKey string) string {
 	function := "internalGetDeviceProtocol"
-	if UseUDP {
-		if _, ok := connectionsUDP[socketKey]; ok {
-			Log(function + " - " + socketKey + "- Connection is UDP")
+
+	// Check for explicit protocol
+	// (SSH can only be defined explicitly)
+	if strings.Contains(socketKey, "://") {
+		protocol := strings.SplitN(socketKey, "://", 2)[0]
+		Log(function + " - " + socketKey + " - Connection is " + protocol)
+		return protocol
+	} else { // Legacy protocol definitions
+		if UseUDP {
 			return "UDP"
-		}
-		return "none"
-	} else { // Some flavor of TCP
-		if _, ok := connectionsTCP[socketKey]; ok {
-			if UseTelnet {
-				Log(function + " - " + socketKey + " - Connection is Telnet")
-				return "Telnet"
-			} else {
-				Log(function + " - " + socketKey + " - Connection is TCP")
-				return "TCP"
-			}
-		}
-		if AllowSSH {
-			if _, ok := connectionsSSH[socketKey]; ok {
-				Log(function + " - " + socketKey + " - Connection is SSH")
-				return "SSH"
-			}
+		} // not UDP, not SSH
+		if UseTelnet {
+			return "Telnet"
+		} else {
+			return "TCP"
 		}
 	}
-	Log(function + " - " + socketKey + " - No connection found")
-	return "none"
 }
 
 func Log(text string) {
@@ -1009,27 +999,42 @@ func getTimeStamp() string {
 
 func getSocketKey(context echo.Context) (string, error) {
 	var address = context.Param("address")
+	var protocol = context.Param("protocol")
 	var port = DefaultSocketPort
 	var username = ""
 	var password = ""
 
+	if protocol != "" {
+		Log("Protocol: " + protocol)
+	}
+
 	if strings.Count(address, "@") == 1 {
 		// there are credentials in there
 		credentials := strings.Split(address, "@")[0]
-		address = strings.Split(address, "@")[1]
+		address = strings.Split(address, "@")[1] // Now address contains only host[:port]
+		Log("222222222222222" + address)
 		if strings.Count(credentials, ":") == 1 {
 			username = strings.Split(credentials, ":")[0]
 			password = strings.Split(credentials, ":")[1]
 		}
 	}
+
 	if strings.Count(address, ":") == 1 {
-		// looks like a port was explicitely defined with the address
-		var err error = nil
-		_ = err // appease
-		port, err = strconv.Atoi(strings.Split(address, ":")[1])
-		address = strings.Split(address, ":")[0]
+		Log("------------------ADDRESS : " + address)
+		// looks like a port was explicitly defined with the address
+		parts := strings.Split(address, ":")
+		address = parts[0] // Host part
+		var err error
+		port, err = strconv.Atoi(parts[1]) // Port part
 		if err != nil {
 			return "", errors.New("port needs to be an integer")
+		}
+	}
+
+	// Default port handling based on protocol
+	if port == DefaultSocketPort {
+		if strings.ToLower(protocol) == "ssh" && DefaultSSHPort != DefaultSocketPort {
+			port = DefaultSSHPort
 		}
 	}
 
@@ -1037,6 +1042,13 @@ func getSocketKey(context echo.Context) (string, error) {
 	if address == "all" {
 		return address, nil
 	}
+
+	// Include protocol in socket key if specified
+	if protocol != "" {
+		return protocol + "://" + username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
+	}
+
+	// Legacy socketKey with no protocol specified
 	return username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
 }
 
@@ -1447,7 +1459,14 @@ func updateDoOnce(arguments []string) bool {
 // This function started from a tutorial: https://www.soberkoder.com/consume-rest-api-go/
 func DoPost(socketKey string, theURL string, jsonReq string) (string, error) {
 	function := "DoPost"
-	postURL := "http://" + socketKey + "/" + theURL
+
+	// Remove protocol from socketKey if specified
+	socketKeySanatized := socketKey
+	if strings.Contains(socketKey, "://") {
+		socketKeySanatized = strings.Split(socketKey, "://")[1]
+	}
+
+	postURL := "http://" + socketKeySanatized + "/" + theURL
 	Log("======> " + function + " - doing POST to: " + postURL + " with contents: " + jsonReq)
 	jsonReqBytes := []byte(jsonReq)
 	password := ""
