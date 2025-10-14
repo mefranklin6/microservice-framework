@@ -24,7 +24,7 @@ import (
 
 // tunables
 // Use setFrameworkGlobals() in microservice.go to change these variables.
-var UseUDP = false // Legacy
+var UseUDP = false // Legacy. Runs the entire service in UDP-only mode
 var UseTelnet = false
 var SSHMode = "per-command session" // Options are "per-command session"
 var KeepAlive = false
@@ -109,7 +109,6 @@ func validGlobals() bool {
 		Log("DefaultSocketPort must be between 1 and 65535")
 		return false
 	}
-	Log("''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''")
 	return true
 }
 
@@ -722,19 +721,75 @@ func writeLineToSSHSocket(socketKey string, line string) bool {
 	function := "writeLineToSSHSocket"
 	if SSHMode == "per-command session" {
 		command := strings.TrimRight(line, "\n") // keep \r
-		output, err := runSingleSSHCommand(socketKey, command)
-		Log("iiiiiiiiIIIIIIII" + output)
-		cleanOutput := strings.ReplaceAll(output, "\r", "")
-		cleanOutput = strings.TrimRight(cleanOutput, "\n")
-		if err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - ssh command error: "+err.Error())
-			// Don't close connection on command failure, just report error
-			// Store empty result so read returns empty
-			global_reader[socketKey] = bufio.NewReader(strings.NewReader(""))
+
+		// Create session with proper I/O handling
+		client, ok := connectionsSSH[socketKey]
+		if !ok || client == nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - SSH client not available")
 			return false
 		}
+
+		session, err := client.NewSession()
+		if err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to create session: "+err.Error())
+			return false
+		}
+		defer session.Close()
+
+		// Set up pipes for interactive I/O
+		var outputBuf bytes.Buffer
+		session.Stdout = &outputBuf
+		session.Stderr = &outputBuf
+
+		stdin, err := session.StdinPipe()
+		if err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to get stdin pipe: "+err.Error())
+			return false
+		}
+
+		// Start an interactive shell session
+		if err := session.Shell(); err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to start shell: "+err.Error())
+			return false
+		}
+
+		// Wait a moment for the banner to appear
+		time.Sleep(500 * time.Millisecond)
+
+		// Send the command and a newline
+		if _, err := stdin.Write([]byte(command + "\n")); err != nil {
+			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to send command: "+err.Error())
+			return false
+		}
+
+		// Give the command time to execute and produce output
+		time.Sleep(500 * time.Millisecond)
+
+		// Get the full output
+		output := outputBuf.String()
+		Log(function + " - Raw output: " + output)
+
+		// Clean and store the output
+		// keep only the last non-empty line of the captured output
+		out := strings.ReplaceAll(output, "\r\n", "\n")
+		parts := strings.Split(out, "\n")
+		lastLine := ""
+		for i := len(parts) - 1; i >= 0; i-- {
+			if strings.TrimSpace(parts[i]) != "" {
+				lastLine = parts[i]
+				break
+			}
+		}
+		if lastLine == "" && len(parts) > 0 {
+			// fallback to the last element even if empty
+			lastLine = parts[len(parts)-1]
+		}
+		output = lastLine
+		cleanOutput := strings.ReplaceAll(output, "\r", "")
+		cleanOutput = strings.TrimSpace(cleanOutput)
+
 		// Store output in a string reader for the read phase
-		global_reader[socketKey] = bufio.NewReader(strings.NewReader(output + string(byte(GlobalDelimiter))))
+		global_reader[socketKey] = bufio.NewReader(strings.NewReader(cleanOutput + string(byte(GlobalDelimiter))))
 		Log(function + " - " + socketKey + " - SSH command executed, output cached")
 		return true
 	} else {
