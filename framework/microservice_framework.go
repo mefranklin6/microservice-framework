@@ -1,4 +1,4 @@
-//version 1.2.10
+//version 1.3.10
 
 package framework
 
@@ -24,9 +24,10 @@ import (
 
 // tunables
 // Use setFrameworkGlobals() in microservice.go to change these variables.
-var UseUDP = false // Legacy. Runs the entire service in UDP-only mode
-var UseTelnet = false
-var SSHMode = "per-command session" // Options are "per-command session"
+var UseUDP = false                       // Legacy. Runs the entire service in UDP-only mode
+var UseTelnet = false                    // Legacy.  Runs the entire service in TCP Telnet mode.
+var SSHMode = "per-command session"      // Options are "per-command session"
+var SSHAuthType = "keyboard-interactive" // Options are "keyboard-interactive"
 var KeepAlive = false
 var KeepAlivePolling = false              // set to true if keep alive polling is implemented in the microservice
 var DisconnectAfterDoneRefreshing = false // if KeepAlive, close the connection when the device is no longer being refreshed
@@ -103,6 +104,13 @@ func validGlobals() bool {
 	}
 	if DisconnectAfterDoneRefreshing && !KeepAlive {
 		Log("DisconnectAfterDoneRefreshing can only be true if KeepAlive is also true")
+		return false
+	}
+	if SSHMode != "per-command session" {
+		Log("SSH Mode only supports: 'per-command session'")
+	}
+	if SSHAuthType != "keyboard-interactive" {
+		Log("SSH Auth Type only supports: 'keybard-interactive'")
 		return false
 	}
 	if DefaultSocketPort < 1 || DefaultSocketPort > 65535 {
@@ -520,41 +528,46 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 	Log(function + " - " + socketKey + " - attempting SSH connection with user: " + username)
 
 	// Setup SSH client config
-	sshConfig := &ssh.ClientConfig{
-		User: username,
-		Auth: []ssh.AuthMethod{
-			// Use keyboard-interactive only - server doesn't support password auth
-			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
-				Log(function + " - " + socketKey + " - SSH keyboard-interactive prompt: " + instruction)
-				for i, question := range questions {
-					Log(function + " - " + socketKey + " - SSH question " + strconv.Itoa(i) + ": " + question)
-				}
-				answers := make([]string, len(questions))
-				for i := range questions {
-					answers[i] = password
-				}
-				return answers, nil
-			}),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         time.Duration(ConnectTimeout) * time.Second,
-		Config: ssh.Config{
-			// Add legacy/compatible algorithms for embedded devices
-			Ciphers: []string{
-				"aes128-ctr", "aes192-ctr", "aes256-ctr", // Modern CTR modes
-				"aes128-cbc", "aes192-cbc", "aes256-cbc", // Legacy CBC modes
-				"3des-cbc", // Very old but widely supported
+	var sshConfig *ssh.ClientConfig
+	if SSHAuthType == "keyboard-interactive" {
+		sshConfig = &ssh.ClientConfig{
+			User: username,
+			Auth: []ssh.AuthMethod{
+				ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+					Log(function + " - " + socketKey + " - SSH keyboard-interactive prompt: " + instruction)
+					for i, question := range questions {
+						Log(function + " - " + socketKey + " - SSH question " + strconv.Itoa(i) + ": " + question)
+					}
+					answers := make([]string, len(questions))
+					for i := range questions {
+						answers[i] = password
+					}
+					return answers, nil
+				}),
 			},
-			KeyExchanges: []string{
-				"diffie-hellman-group14-sha256", // Modern
-				"diffie-hellman-group14-sha1",   // Older but common
-				"diffie-hellman-group1-sha1",    // Legacy but widely supported
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         time.Duration(ConnectTimeout) * time.Second,
+			Config: ssh.Config{
+				// Add legacy/compatible algorithms for embedded devices
+				Ciphers: []string{
+					"aes128-ctr", "aes192-ctr", "aes256-ctr", // Modern CTR modes
+					"aes128-cbc", "aes192-cbc", "aes256-cbc", // Legacy CBC modes
+					"3des-cbc", // Very old but widely supported
+				},
+				KeyExchanges: []string{
+					"diffie-hellman-group14-sha256", // Modern
+					"diffie-hellman-group14-sha1",   // Older but common
+					"diffie-hellman-group1-sha1",    // Legacy but widely supported
+				},
+				MACs: []string{
+					"hmac-sha2-256", "hmac-sha2-512", // Modern
+					"hmac-sha1", "hmac-sha1-96", // Legacy but compatible
+				},
 			},
-			MACs: []string{
-				"hmac-sha2-256", "hmac-sha2-512", // Modern
-				"hmac-sha1", "hmac-sha1-96", // Legacy but compatible
-			},
-		},
+		}
+	} else {
+		AddToErrors(socketKey, function+"- Not implemented!  SSHAuth supports keyboard-interactive only")
+		return false
 	}
 	// Create underlying TCP connection with timeout to control dial timing
 	conn, err := net.DialTimeout("tcp", socketAddress, time.Duration(ConnectTimeout)*time.Second)
@@ -564,7 +577,6 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, socketAddress, sshConfig)
 	if err != nil {
-		// Provide more detailed error information for authentication failures
 		errMsg := function + " - " + socketKey + " - SSH handshake error: " + err.Error()
 		if strings.Contains(err.Error(), "ssh: handshake failed") {
 			if strings.Contains(err.Error(), "authentication") || strings.Contains(err.Error(), "userauth") {
@@ -588,7 +600,7 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 
 	// Success: store SSH client for per-command sessions
 	connectionsSSH[socketKey] = client
-	Log("establishSocketConnectionIfNeeded - " + socketKey + " - SSH connection successfully established")
+	Log(function + " - " + socketKey + " - SSH connection successfully established")
 	return true
 }
 
@@ -686,35 +698,6 @@ func internalCloseSocketConnection(socketKey string) bool {
 	return true
 }
 
-// Internal for 'per-command session' SSH mode
-// Must be called with connectionsMutex held
-func runSingleSSHCommand(socketKey string, command string) (string, error) {
-	//function := "runSingleSSHCommand"
-	client, ok := connectionsSSH[socketKey]
-	if !ok || client == nil {
-		return "", fmt.Errorf("SSH client not available")
-	}
-
-	// Create a new session for this command
-	session, err := client.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("failed to create session: %v", err)
-	}
-	defer session.Close()
-
-	// Run the command and get combined output
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		// Command may have failed, but we still return output if any
-		if len(output) > 0 {
-			return strings.TrimSpace(string(output)), nil
-		}
-		return "", fmt.Errorf("command failed: %v", err)
-	}
-
-	return strings.TrimSpace(string(output)), nil
-}
-
 // Internal utility to handle writing to SSH
 // Must be called with connectionsMutex held
 func writeLineToSSHSocket(socketKey string, line string) bool {
@@ -790,7 +773,6 @@ func writeLineToSSHSocket(socketKey string, line string) bool {
 
 		// Store output in a string reader for the read phase
 		global_reader[socketKey] = bufio.NewReader(strings.NewReader(cleanOutput + string(byte(GlobalDelimiter))))
-		Log(function + " - " + socketKey + " - SSH command executed, output cached")
 		return true
 	} else {
 		// Add future modes here
@@ -812,11 +794,15 @@ func WriteLineToSocket(socketKey string, line string) bool {
 		}
 	}
 
-	if internalGetDeviceProtocol(socketKey) == "ssh" {
+	protocol := internalGetDeviceProtocol(socketKey)
+
+	// SSH
+	if protocol == "ssh" {
 		return writeLineToSSHSocket(socketKey, line)
 	}
 
-	if UseUDP {
+	// UDP
+	if protocol == "udp" || protocol == "" && UseUDP {
 		err := connectionsUDP[socketKey].SetWriteDeadline(time.Now().Add(time.Duration(WriteTimeout) * time.Second))
 		if err != nil {
 			return addToErrorsAndReturn(socketKey, function+" - "+socketKey+" - bdsf34432 can't set write timeout with: "+err.Error(), false)
@@ -928,9 +914,10 @@ func tryReadLineFromSocket(socketKey string) string {
 		}
 	}
 
-	if internalGetDeviceProtocol(socketKey) == "ssh" {
+	protocol := internalGetDeviceProtocol(socketKey)
+	if protocol == "ssh" {
 		sshRet := tryReadSSHLineFromSocket(socketKey)
-		Log("  " + function + " - vae345c " + socketKey + " - read : " + sshRet)
+		Log("  " + function + " " + socketKey + " - read : " + sshRet)
 		return sshRet
 
 	}
@@ -996,7 +983,7 @@ func tryReadLineFromSocket(socketKey string) string {
 			}
 			// Telnet negotiations for the Biamp DSP do not have a terminator. The response is read in but the connection times out.
 			// This allows us to see and respond to the negotiation.
-			if UseTelnet {
+			if UseTelnet || protocol == "telnet" {
 				return ret
 			} else {
 				return ""
@@ -1033,30 +1020,27 @@ func CheckConnectionsMapExists(socketKey string) bool {
 // and to encapsulate UDP versus TCP connections differences
 // Expected to be used inside the framework. Locking/unlocking happens outside this function.
 func internalConnectionsMapExists(socketKey string) bool {
-	if UseUDP {
-		if _, ok := connectionsUDP[socketKey]; ok {
-			return true
-		}
-	} else { // TCP, SSH, or Telnet
-		if _, ok := connectionsTCP[socketKey]; ok {
-			return true
-		}
-		if _, ok := connectionsSSH[socketKey]; ok {
-			return true
-		}
+	if _, ok := connectionsUDP[socketKey]; ok {
+		return true
+	}
+	if _, ok := connectionsTCP[socketKey]; ok {
+		return true
+	}
+	if _, ok := connectionsSSH[socketKey]; ok {
+		return true
 	}
 	return false
 }
 
 // External function to get the connection protocol of the socketKey
-// returns "UDP", "TCP", "Telnet", "SSH" or "none"
+// Returns "tcp", "telnet", "udp", "ssh"
 func GetDeviceProtocol(socketKey string) string {
 	connectionsMutex.Lock()
 	defer connectionsMutex.Unlock()
 	return internalGetDeviceProtocol(socketKey)
 }
 
-// Expected to be used inside the framework. Locking/unlocking happens outside this function.
+// Expected to be used inside the framework. Must be called with connectionsMutex held.
 // Returns "tcp", "telnet", "udp", "ssh"
 func internalGetDeviceProtocol(socketKey string) string {
 	function := "internalGetDeviceProtocol"
@@ -1065,12 +1049,18 @@ func internalGetDeviceProtocol(socketKey string) string {
 	// (SSH can only be defined explicitly)
 	if strings.Contains(socketKey, "|") {
 		protocol := strings.SplitN(socketKey, "|", 2)[0]
+		protocol = strings.ToLower(protocol)
+		switch protocol {
+		case "udp", "ssh", "tcp", "telnet":
+		default:
+			AddToErrors(socketKey, function+" - protocol specified but: "+protocol+", is invalid!")
+		}
 		Log(function + " - " + socketKey + " - Connection is " + protocol)
-		return strings.ToLower(protocol)
-	} else { // Legacy protocol definitions
+		return protocol
+	} else { // Legacy protocol definitions (infered from framework tunables)
 		if UseUDP {
 			return "udp"
-		} // not UDP, not SSH
+		}
 		if UseTelnet {
 			return "telnet"
 		} else {
@@ -1094,13 +1084,10 @@ func getTimeStamp() string {
 
 func getSocketKey(context echo.Context) (string, error) {
 	var address = context.Param("address")
-	var port = DefaultSocketPort
+	var port = 0
 	var username = ""
 	var password = ""
 	var protocol = ""
-
-	Log("11111111" + address)
-	Log("------------------ADDRESS : " + address)
 
 	// Check for protocol using "|" delimiter
 	if strings.Contains(address, "|") {
@@ -1113,8 +1100,7 @@ func getSocketKey(context echo.Context) (string, error) {
 	if strings.Count(address, "@") == 1 {
 		// there are credentials in there
 		credentials := strings.Split(address, "@")[0]
-		address = strings.Split(address, "@")[1] // Now address contains only host[:port]
-		Log("222222222222222" + address)
+		address = strings.Split(address, "@")[1]
 		if strings.Count(credentials, ":") == 1 {
 			username = strings.Split(credentials, ":")[0]
 			password = strings.Split(credentials, ":")[1]
@@ -1122,7 +1108,6 @@ func getSocketKey(context echo.Context) (string, error) {
 	}
 
 	if strings.Count(address, ":") == 1 {
-		Log("------------------ADDRESS : " + address)
 		// looks like a port was explicitly defined with the address
 		parts := strings.Split(address, ":")
 		address = parts[0] // Host part
@@ -1131,13 +1116,19 @@ func getSocketKey(context echo.Context) (string, error) {
 		if err != nil {
 			return "", errors.New("port needs to be an integer")
 		}
+
 	}
 
-	// Default port handling based on protocol
-	if port == DefaultSocketPort {
-		if strings.ToLower(protocol) == "ssh" && DefaultSSHPort != DefaultSocketPort {
+	// No port defined, add a default based on protocol
+	if port == 0 {
+		switch protocol {
+		case "ssh":
 			port = DefaultSSHPort
+		default:
+			port = DefaultSocketPort
+
 		}
+
 	}
 
 	// "all" is a keyword used by getErrors, it intends to get errors for all devices
