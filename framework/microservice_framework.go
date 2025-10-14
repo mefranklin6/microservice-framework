@@ -492,11 +492,18 @@ func checkFunctionAppend(functionToCall string, endPoint string, socketKey strin
 func establishSSHConnection(socketKey string, socketAddress string) bool {
 	function := "establishSSHConnection"
 	Log(function + " - " + socketKey + " - using SSH transport")
-	// Parse credentials for SSH
+	// Parse credentials for SSH - need to strip protocol prefix first
 	username := ""
 	password := ""
-	if strings.Count(socketKey, "@") == 1 {
-		creds := strings.Split(socketKey, "@")[0]
+	credsPart := socketKey
+
+	// Remove protocol prefix if present
+	if strings.Contains(socketKey, "|") {
+		credsPart = strings.Split(socketKey, "|")[1]
+	}
+
+	if strings.Count(credsPart, "@") == 1 {
+		creds := strings.Split(credsPart, "@")[0]
 		if strings.Count(creds, ":") == 1 {
 			username = strings.Split(creds, ":")[0]
 			password = strings.Split(creds, ":")[1]
@@ -511,13 +518,18 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 		AddToErrors(socketKey, function+" - "+socketKey+" - SSH password not provided; include username:password@host[:port] in request or configure credentials")
 		return false
 	}
+	Log(function + " - " + socketKey + " - attempting SSH connection with user: " + username)
+
 	// Setup SSH client config
 	sshConfig := &ssh.ClientConfig{
 		User: username,
 		Auth: []ssh.AuthMethod{
-			// Try both password and keyboard-interactive to maximize compatibility
-			ssh.Password(password),
+			// Use keyboard-interactive only - server doesn't support password auth
 			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				Log(function + " - " + socketKey + " - SSH keyboard-interactive prompt: " + instruction)
+				for i, question := range questions {
+					Log(function + " - " + socketKey + " - SSH question " + strconv.Itoa(i) + ": " + question)
+				}
 				answers := make([]string, len(questions))
 				for i := range questions {
 					answers[i] = password
@@ -527,6 +539,23 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Duration(ConnectTimeout) * time.Second,
+		Config: ssh.Config{
+			// Add legacy/compatible algorithms for embedded devices
+			Ciphers: []string{
+				"aes128-ctr", "aes192-ctr", "aes256-ctr", // Modern CTR modes
+				"aes128-cbc", "aes192-cbc", "aes256-cbc", // Legacy CBC modes
+				"3des-cbc", // Very old but widely supported
+			},
+			KeyExchanges: []string{
+				"diffie-hellman-group14-sha256", // Modern
+				"diffie-hellman-group14-sha1",   // Older but common
+				"diffie-hellman-group1-sha1",    // Legacy but widely supported
+			},
+			MACs: []string{
+				"hmac-sha2-256", "hmac-sha2-512", // Modern
+				"hmac-sha1", "hmac-sha1-96", // Legacy but compatible
+			},
+		},
 	}
 	// Create underlying TCP connection with timeout to control dial timing
 	conn, err := net.DialTimeout("tcp", socketAddress, time.Duration(ConnectTimeout)*time.Second)
@@ -536,7 +565,14 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, socketAddress, sshConfig)
 	if err != nil {
-		AddToErrors(socketKey, function+" - "+socketKey+" - SSH handshake error: "+err.Error())
+		// Provide more detailed error information for authentication failures
+		errMsg := function + " - " + socketKey + " - SSH handshake error: " + err.Error()
+		if strings.Contains(err.Error(), "ssh: handshake failed") {
+			if strings.Contains(err.Error(), "authentication") || strings.Contains(err.Error(), "userauth") {
+				errMsg += " (Authentication failed - check username/password or try different auth method)"
+			}
+		}
+		AddToErrors(socketKey, errMsg)
 		_ = conn.Close()
 		return false
 	}
@@ -569,8 +605,8 @@ func establishSocketConnectionIfNeeded(socketKey string) bool {
 	protocol := ""
 	socketAddress := socketKey
 
-	if strings.Contains(socketKey, "://") {
-		parts := strings.SplitN(socketKey, "://", 2)
+	if strings.Contains(socketKey, "|") {
+		parts := strings.SplitN(socketKey, "|", 2)
 		protocol = parts[0]
 		socketAddress = parts[1]
 	}
@@ -685,7 +721,11 @@ func runSingleSSHCommand(socketKey string, command string) (string, error) {
 func writeLineToSSHSocket(socketKey string, line string) bool {
 	function := "writeLineToSSHSocket"
 	if SSHMode == "per-command session" {
-		output, err := runSingleSSHCommand(socketKey, strings.TrimSpace(line))
+		command := strings.TrimRight(line, "\n") // keep \r
+		output, err := runSingleSSHCommand(socketKey, command)
+		Log("iiiiiiiiIIIIIIII" + output)
+		cleanOutput := strings.ReplaceAll(output, "\r", "")
+		cleanOutput = strings.TrimRight(cleanOutput, "\n")
 		if err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - ssh command error: "+err.Error())
 			// Don't close connection on command failure, just report error
@@ -717,7 +757,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 		}
 	}
 
-	if internalGetDeviceProtocol(socketKey) == "SSH" {
+	if strings.ToLower(internalGetDeviceProtocol(socketKey)) == "ssh" {
 		return writeLineToSSHSocket(socketKey, line)
 	}
 
@@ -833,7 +873,7 @@ func tryReadLineFromSocket(socketKey string) string {
 		}
 	}
 
-	if internalGetDeviceProtocol(socketKey) == "SSH" {
+	if strings.ToLower(internalGetDeviceProtocol(socketKey)) == "ssh" {
 		sshRet := tryReadSSHLineFromSocket(socketKey)
 		Log("  " + function + " - vae345c " + socketKey + " - read : " + sshRet)
 		return sshRet
@@ -962,24 +1002,24 @@ func GetDeviceProtocol(socketKey string) string {
 }
 
 // Expected to be used inside the framework. Locking/unlocking happens outside this function.
-// Returns "TCP", "Telnet", "UDP", "SSH" or "none"
+// Returns "tcp", "telnet", "udp", "ssh"
 func internalGetDeviceProtocol(socketKey string) string {
 	function := "internalGetDeviceProtocol"
 
 	// Check for explicit protocol
 	// (SSH can only be defined explicitly)
-	if strings.Contains(socketKey, "://") {
-		protocol := strings.SplitN(socketKey, "://", 2)[0]
+	if strings.Contains(socketKey, "|") {
+		protocol := strings.SplitN(socketKey, "|", 2)[0]
 		Log(function + " - " + socketKey + " - Connection is " + protocol)
-		return protocol
+		return strings.ToLower(protocol)
 	} else { // Legacy protocol definitions
 		if UseUDP {
-			return "UDP"
+			return "udp"
 		} // not UDP, not SSH
 		if UseTelnet {
-			return "Telnet"
+			return "telnet"
 		} else {
-			return "TCP"
+			return "tcp"
 		}
 	}
 }
@@ -999,13 +1039,20 @@ func getTimeStamp() string {
 
 func getSocketKey(context echo.Context) (string, error) {
 	var address = context.Param("address")
-	var protocol = context.Param("protocol")
 	var port = DefaultSocketPort
 	var username = ""
 	var password = ""
+	var protocol = ""
 
-	if protocol != "" {
-		Log("Protocol: " + protocol)
+	Log("11111111" + address)
+	Log("------------------ADDRESS : " + address)
+
+	// Check for protocol using "|" delimiter
+	if strings.Contains(address, "|") {
+		parts := strings.SplitN(address, "|", 2)
+		protocol = strings.ToLower(parts[0])
+		address = parts[1]
+		Log("Protocol detected: " + protocol)
 	}
 
 	if strings.Count(address, "@") == 1 {
@@ -1045,7 +1092,7 @@ func getSocketKey(context echo.Context) (string, error) {
 
 	// Include protocol in socket key if specified
 	if protocol != "" {
-		return protocol + "://" + username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
+		return protocol + "|" + username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
 	}
 
 	// Legacy socketKey with no protocol specified
@@ -1462,8 +1509,8 @@ func DoPost(socketKey string, theURL string, jsonReq string) (string, error) {
 
 	// Remove protocol from socketKey if specified
 	socketKeySanatized := socketKey
-	if strings.Contains(socketKey, "://") {
-		socketKeySanatized = strings.Split(socketKey, "://")[1]
+	if strings.Contains(socketKey, "|") {
+		socketKeySanatized = strings.Split(socketKey, "|")[1]
 	}
 
 	postURL := "http://" + socketKeySanatized + "/" + theURL
