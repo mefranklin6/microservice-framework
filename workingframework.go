@@ -1,4 +1,4 @@
-//version 1.2.10
+//version 1.2.9
 
 package framework
 
@@ -19,14 +19,12 @@ import (
 	"time"
 
 	"github.com/labstack/echo"
-	"golang.org/x/crypto/ssh"
 )
 
 // tunables
 // Use setFrameworkGlobals() in microservice.go to change these variables.
-var UseUDP = false // Legacy. Runs the entire service in UDP-only mode
+var UseUDP = false
 var UseTelnet = false
-var SSHMode = "per-command session" // Options are "per-command session"
 var KeepAlive = false
 var KeepAlivePolling = false              // set to true if keep alive polling is implemented in the microservice
 var DisconnectAfterDoneRefreshing = false // if KeepAlive, close the connection when the device is no longer being refreshed
@@ -42,7 +40,6 @@ var ReadFailSleep = 500 // milliseconds
 var FunctionStackFull = 100
 var ReportOlderInterval = 120 // seconds (used to throttle function stack errors when network connectivity is gone)
 var DefaultSocketPort int
-var DefaultSSHPort = 22 // Default is 22.  Extron uses 22023
 var MicroserviceName = ""
 
 // All possible values are "Don't add another instance", "Remove older instance", or "Add another instance"
@@ -61,10 +58,9 @@ var lastQueried = make(map[string]time.Time)
 var lastQueriedMutex sync.Mutex
 var connectionsUDP = make(map[string]*net.UDPConn)
 var connectionsTCP = make(map[string]*net.TCPConn)
-var connectionsSSH = make(map[string]*ssh.Client)
 
 // var connections = make(map[string]*net.Conn) // we'll set this to one of the above at runtime
-var connectionsMutex sync.Mutex // Mutex for connectionsUDP, connectionsTCP and connectionsSSH
+var connectionsMutex sync.Mutex
 var deviceMutexes = make(map[string]sync.Mutex)
 var devicesLock = make(map[string]bool)
 var devicesLockMutex sync.Mutex
@@ -93,23 +89,6 @@ var stubStorage = stubMapping{}
 // Function to register the main package function
 func RegisterMainGetFunc(fn MainGetFunc) {
 	doDeviceSpecificGet = fn
-}
-
-// Validates the globals and tunables upon startup
-func validGlobals() bool {
-	if UseUDP && UseTelnet {
-		Log("Cannot use both UDP and Telnet at the same time")
-		return false
-	}
-	if DisconnectAfterDoneRefreshing && !KeepAlive {
-		Log("DisconnectAfterDoneRefreshing can only be true if KeepAlive is also true")
-		return false
-	}
-	if DefaultSocketPort < 1 || DefaultSocketPort > 65535 {
-		Log("DefaultSocketPort must be between 1 and 65535")
-		return false
-	}
-	return true
 }
 
 // Function to register the main package function
@@ -148,11 +127,6 @@ func Startup() {
 			AddToErrors("all", retMsg)
 		}
 	}()
-
-	if !validGlobals() {
-		AddToErrors("all", function+" - invalid configuration, cannot start")
-		return
-	}
 
 	Log(MicroserviceName + " using OpenAV microservice framework")
 
@@ -488,167 +462,51 @@ func checkFunctionAppend(functionToCall string, endPoint string, socketKey strin
 	return true
 }
 
-func establishSSHConnection(socketKey string, socketAddress string) bool {
-	function := "establishSSHConnection"
-	Log(function + " - " + socketKey + " - using SSH transport")
-	// Parse credentials for SSH - need to strip protocol prefix first
-	username := ""
-	password := ""
-	credsPart := socketKey
-
-	// Remove protocol prefix if present
-	if strings.Contains(socketKey, "|") {
-		credsPart = strings.Split(socketKey, "|")[1]
-	}
-
-	if strings.Count(credsPart, "@") == 1 {
-		creds := strings.Split(credsPart, "@")[0]
-		if strings.Count(creds, ":") == 1 {
-			username = strings.Split(creds, ":")[0]
-			password = strings.Split(creds, ":")[1]
-		}
-	}
-	if username == "" {
-		username = "admin" // default username if not specified
-		Log(function + " - " + socketKey + " - no username specified, using default: " + username)
-	}
-	// Ensure we have credentials; otherwise we won't attempt any auth methods and the server will reject with "attempted methods [none]".
-	if password == "" {
-		AddToErrors(socketKey, function+" - "+socketKey+" - SSH password not provided; include username:password@host[:port] in request or configure credentials")
-		return false
-	}
-	Log(function + " - " + socketKey + " - attempting SSH connection with user: " + username)
-
-	// Setup SSH client config
-	sshConfig := &ssh.ClientConfig{
-		User: username,
-		Auth: []ssh.AuthMethod{
-			// Use keyboard-interactive only - server doesn't support password auth
-			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
-				Log(function + " - " + socketKey + " - SSH keyboard-interactive prompt: " + instruction)
-				for i, question := range questions {
-					Log(function + " - " + socketKey + " - SSH question " + strconv.Itoa(i) + ": " + question)
-				}
-				answers := make([]string, len(questions))
-				for i := range questions {
-					answers[i] = password
-				}
-				return answers, nil
-			}),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         time.Duration(ConnectTimeout) * time.Second,
-		Config: ssh.Config{
-			// Add legacy/compatible algorithms for embedded devices
-			Ciphers: []string{
-				"aes128-ctr", "aes192-ctr", "aes256-ctr", // Modern CTR modes
-				"aes128-cbc", "aes192-cbc", "aes256-cbc", // Legacy CBC modes
-				"3des-cbc", // Very old but widely supported
-			},
-			KeyExchanges: []string{
-				"diffie-hellman-group14-sha256", // Modern
-				"diffie-hellman-group14-sha1",   // Older but common
-				"diffie-hellman-group1-sha1",    // Legacy but widely supported
-			},
-			MACs: []string{
-				"hmac-sha2-256", "hmac-sha2-512", // Modern
-				"hmac-sha1", "hmac-sha1-96", // Legacy but compatible
-			},
-		},
-	}
-	// Create underlying TCP connection with timeout to control dial timing
-	conn, err := net.DialTimeout("tcp", socketAddress, time.Duration(ConnectTimeout)*time.Second)
-	if err != nil {
-		AddToErrors(socketKey, function+" - "+socketKey+" - SSH dial error: "+err.Error())
-		return false
-	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, socketAddress, sshConfig)
-	if err != nil {
-		// Provide more detailed error information for authentication failures
-		errMsg := function + " - " + socketKey + " - SSH handshake error: " + err.Error()
-		if strings.Contains(err.Error(), "ssh: handshake failed") {
-			if strings.Contains(err.Error(), "authentication") || strings.Contains(err.Error(), "userauth") {
-				errMsg += " (Authentication failed - check username/password or try different auth method)"
-			}
-		}
-		AddToErrors(socketKey, errMsg)
-		_ = conn.Close()
-		return false
-	}
-	client := ssh.NewClient(c, chans, reqs)
-	// Test connectivity by creating a quick test session
-	session, err := client.NewSession()
-	if err != nil {
-		AddToErrors(socketKey, function+" - "+socketKey+" - SSH test session error: "+err.Error())
-		_ = client.Close()
-		return false
-	}
-	// Close the test session; we only needed it to verify connectivity
-	_ = session.Close()
-
-	// Success: store SSH client for per-command sessions
-	connectionsSSH[socketKey] = client
-	Log("establishSocketConnectionIfNeeded - " + socketKey + " - SSH connection successfully established")
-	return true
-}
-
 func establishSocketConnectionIfNeeded(socketKey string) bool {
 	function := "establishSocketConnectionIfNeeded"
 
 	if internalConnectionsMapExists(socketKey) {
-		Log(function + " - " + socketKey + " - connection already in table")
+		Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection already in table")
 		return true
-	}
-
-	// Extract protocol if present
-	protocol := ""
-	socketAddress := socketKey
-
-	if strings.Contains(socketKey, "|") {
-		parts := strings.SplitN(socketKey, "|", 2)
-		protocol = parts[0]
-		socketAddress = parts[1]
-	}
-
-	if strings.Count(socketAddress, "@") == 1 {
-		socketAddress = strings.Split(socketAddress, "@")[1]
-	}
-
-	// Connect based on explicit protocol or fall back to global settings
-	if protocol == "udp" || (protocol == "" && UseUDP) {
-		// UDP connection logic
-		//We use ListenUDP instead of Dial in case a UDP device responds from a different port than the one we send to.
-		listeningPort := ":" + fmt.Sprint(DefaultSocketPort)
-		locaddr, err := net.ResolveUDPAddr("udp", listeningPort)
-		connection, err := net.ListenUDP("udp", locaddr)
-		if err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - 423fsdaa error connecting UDP: "+err.Error())
-			return false
-		} else if connection == nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - dbtw33 no error connecting UDP but connection is still nil")
-			return false
-		} else {
-			Log(function + " - " + socketKey + " - UDP connection successfully established")
-			connectionsUDP[socketKey] = connection
-		}
-	} else if protocol == "ssh" {
-		if !establishSSHConnection(socketKey, socketAddress) {
-			return false
-		}
 	} else {
-		// TCP/Telnet connection (default behavior)
-		d := net.Dialer{Timeout: time.Duration(ConnectTimeout) * time.Second}
-		connection, err := d.Dial("tcp", socketAddress)
-		if err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - q43fdsa error connecting TCP: "+err.Error())
-			return false
-		} else if connection == nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - bfdwdf3 no error connecting TCP but connection is still nil")
-			return false
-		} else {
-			Log(function + " - " + socketKey + " - TCP connection successfully established")
-			connectionsTCP[socketKey] = connection.(*net.TCPConn)
-			global_reader[socketKey] = bufio.NewReader(connectionsTCP[socketKey])
+		Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection needs to be established")
+		socketAddress := socketKey
+		if strings.Count(socketKey, "@") == 1 {
+			socketAddress = strings.Split(socketKey, "@")[1]
+		}
+
+		if UseUDP {
+			//We use ListenUDP instead of Dial in case a UDP device responds from a different port than the one we send to.
+			//Seen with Sony cameras.
+			listeningPort := ":" + fmt.Sprint(DefaultSocketPort)
+			locaddr, err := net.ResolveUDPAddr("udp", listeningPort)
+			connection, err := net.ListenUDP("udp", locaddr)
+			if err != nil {
+				AddToErrors(socketKey, function+" - "+socketKey+" - 423fsdaa error connecting: "+err.Error())
+				return false
+			} else if connection == nil {
+				AddToErrors(socketKey, function+" - "+socketKey+" - dbtw33 no error connecting but connection is still nil")
+				return false
+			} else {
+				Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection successfully established")
+				connectionsUDP[socketKey] = connection
+			}
+		} else { // TCP
+			d := net.Dialer{Timeout: time.Duration(ConnectTimeout) * time.Second}
+			connection, err := d.Dial("tcp", socketAddress)
+			if err != nil {
+				AddToErrors(socketKey, function+" - "+socketKey+" - q43fdsa error connecting: "+err.Error())
+				return false
+			} else if connection == nil {
+				AddToErrors(socketKey, function+" - "+socketKey+" - bfdwdf3 no error connecting but connection is still nil")
+				return false
+			} else {
+				Log("establishSocketConnectionIfNeeded - " + socketKey + " - connection successfully established")
+				connectionsTCP[socketKey] = connection.(*net.TCPConn)
+
+				// TCP success so make a reader
+				global_reader[socketKey] = bufio.NewReader(connectionsTCP[socketKey])
+			}
 		}
 	}
 
@@ -668,135 +526,20 @@ func CloseSocketConnection(socketKey string) {
 }
 
 func internalCloseSocketConnection(socketKey string) bool {
-	switch internalGetDeviceProtocol(socketKey) {
-	case "udp":
-		connectionsUDP[socketKey].Close()
-		delete(connectionsUDP, socketKey)
-	case "tcp":
-		connectionsTCP[socketKey].Close()
-		delete(connectionsTCP, socketKey)
-	case "ssh":
-		if client, ok := connectionsSSH[socketKey]; ok && client != nil {
-			_ = client.Close()
-			delete(connectionsSSH, socketKey)
+	if internalConnectionsMapExists(socketKey) {
+		if UseUDP {
+			connectionsUDP[socketKey].Close()
+			delete(connectionsUDP, socketKey)
+		} else {
+			connectionsTCP[socketKey].Close()
+			delete(connectionsTCP, socketKey)
 		}
+		// Log("internalCloseSocketConnection - " + socketKey + " - connection closed")
+		return true
 	}
 	// we succeed no matter what - either it was gone already or we closed it or there never
 	//     was a connection to close (e.g. Bravia)
 	return true
-}
-
-// Internal for 'per-command session' SSH mode
-// Must be called with connectionsMutex held
-func runSingleSSHCommand(socketKey string, command string) (string, error) {
-	//function := "runSingleSSHCommand"
-	client, ok := connectionsSSH[socketKey]
-	if !ok || client == nil {
-		return "", fmt.Errorf("SSH client not available")
-	}
-
-	// Create a new session for this command
-	session, err := client.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("failed to create session: %v", err)
-	}
-	defer session.Close()
-
-	// Run the command and get combined output
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		// Command may have failed, but we still return output if any
-		if len(output) > 0 {
-			return strings.TrimSpace(string(output)), nil
-		}
-		return "", fmt.Errorf("command failed: %v", err)
-	}
-
-	return strings.TrimSpace(string(output)), nil
-}
-
-// Internal utility to handle writing to SSH
-// Must be called with connectionsMutex held
-func writeLineToSSHSocket(socketKey string, line string) bool {
-	function := "writeLineToSSHSocket"
-	if SSHMode == "per-command session" {
-		command := strings.TrimRight(line, "\n") // keep \r
-
-		// Create session with proper I/O handling
-		client, ok := connectionsSSH[socketKey]
-		if !ok || client == nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - SSH client not available")
-			return false
-		}
-
-		session, err := client.NewSession()
-		if err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to create session: "+err.Error())
-			return false
-		}
-		defer session.Close()
-
-		// Set up pipes for interactive I/O
-		var outputBuf bytes.Buffer
-		session.Stdout = &outputBuf
-		session.Stderr = &outputBuf
-
-		stdin, err := session.StdinPipe()
-		if err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to get stdin pipe: "+err.Error())
-			return false
-		}
-
-		// Start an interactive shell session
-		if err := session.Shell(); err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to start shell: "+err.Error())
-			return false
-		}
-
-		// Wait a moment for the banner to appear
-		time.Sleep(500 * time.Millisecond)
-
-		// Send the command and a newline
-		if _, err := stdin.Write([]byte(command + "\n")); err != nil {
-			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to send command: "+err.Error())
-			return false
-		}
-
-		// Give the command time to execute and produce output
-		time.Sleep(500 * time.Millisecond)
-
-		// Get the full output
-		output := outputBuf.String()
-		Log(function + " - Raw output: " + output)
-
-		// Clean and store the output
-		// keep only the last non-empty line of the captured output
-		out := strings.ReplaceAll(output, "\r\n", "\n")
-		parts := strings.Split(out, "\n")
-		lastLine := ""
-		for i := len(parts) - 1; i >= 0; i-- {
-			if strings.TrimSpace(parts[i]) != "" {
-				lastLine = parts[i]
-				break
-			}
-		}
-		if lastLine == "" && len(parts) > 0 {
-			// fallback to the last element even if empty
-			lastLine = parts[len(parts)-1]
-		}
-		output = lastLine
-		cleanOutput := strings.ReplaceAll(output, "\r", "")
-		cleanOutput = strings.TrimSpace(cleanOutput)
-
-		// Store output in a string reader for the read phase
-		global_reader[socketKey] = bufio.NewReader(strings.NewReader(cleanOutput + string(byte(GlobalDelimiter))))
-		Log(function + " - " + socketKey + " - SSH command executed, output cached")
-		return true
-	} else {
-		// Add future modes here
-		AddToErrors(socketKey, function+" - Not Implemented!  SSHMode only supports 'per-command session'")
-		return false
-	}
 }
 
 func WriteLineToSocket(socketKey string, line string) bool {
@@ -810,10 +553,6 @@ func WriteLineToSocket(socketKey string, line string) bool {
 		if !establishSocketConnectionIfNeeded(socketKey) {
 			return addToErrorsAndReturn("all", function+" - "+socketKey+" - bsfd456ty connection not in table and could not establish it", false)
 		}
-	}
-
-	if internalGetDeviceProtocol(socketKey) == "ssh" {
-		return writeLineToSSHSocket(socketKey, line)
 	}
 
 	if UseUDP {
@@ -887,33 +626,6 @@ func ReadLineFromSocket(socketKey string) string {
 	return msg
 }
 
-func tryReadSSHLineFromSocket(socketKey string) string {
-	function := "tryReadSSHLineFromSocket"
-	bytesRead := 0
-	// Read from cached output (stored during write phase)
-	r, ok := global_reader[socketKey]
-	if !ok || r == nil {
-		Log(function + " - " + socketKey + " - no cached SSH output")
-		return ""
-	}
-	// Read the cached response
-	data, err := r.ReadBytes(byte(GlobalDelimiter))
-	if err != nil && err != io.EOF {
-		Log(function + " - " + socketKey + " - error reading cached SSH output")
-		return ""
-	}
-	if len(data) == 0 {
-		Log(function + " - " + socketKey + " - empty cached SSH output")
-		return ""
-	}
-	ret := strings.TrimSpace(string(data))
-	bytesRead = len(ret)
-	Log(fmt.Sprintf("  "+function+" - "+socketKey+" - read %d bytes (SSH): %v", bytesRead, ret))
-	// Clear the cached output
-	delete(global_reader, socketKey)
-	return ret
-}
-
 // This does the work of reading a line with a short timeout.  It can see if there is more pending input from the socket.
 func tryReadLineFromSocket(socketKey string) string {
 	function := "TryReadLineFromSocket"
@@ -926,13 +638,6 @@ func tryReadLineFromSocket(socketKey string) string {
 			AddToErrors("all", function+" - ljk54v "+socketKey+" - connection not in table and could not establish it")
 			return ""
 		}
-	}
-
-	if internalGetDeviceProtocol(socketKey) == "ssh" {
-		sshRet := tryReadSSHLineFromSocket(socketKey)
-		Log("  " + function + " - vae345c " + socketKey + " - read : " + sshRet)
-		return sshRet
-
 	}
 
 	var err error = nil
@@ -1034,49 +739,18 @@ func CheckConnectionsMapExists(socketKey string) bool {
 // Expected to be used inside the framework. Locking/unlocking happens outside this function.
 func internalConnectionsMapExists(socketKey string) bool {
 	if UseUDP {
-		if _, ok := connectionsUDP[socketKey]; ok {
-			return true
+		if _, ok := connectionsUDP[socketKey]; !ok {
+			//Log("q3fasv UDP not connected")
+			return false
 		}
-	} else { // TCP, SSH, or Telnet
-		if _, ok := connectionsTCP[socketKey]; ok {
-			return true
-		}
-		if _, ok := connectionsSSH[socketKey]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// External function to get the connection protocol of the socketKey
-// returns "UDP", "TCP", "Telnet", "SSH" or "none"
-func GetDeviceProtocol(socketKey string) string {
-	connectionsMutex.Lock()
-	defer connectionsMutex.Unlock()
-	return internalGetDeviceProtocol(socketKey)
-}
-
-// Expected to be used inside the framework. Locking/unlocking happens outside this function.
-// Returns "tcp", "telnet", "udp", "ssh"
-func internalGetDeviceProtocol(socketKey string) string {
-	function := "internalGetDeviceProtocol"
-
-	// Check for explicit protocol
-	// (SSH can only be defined explicitly)
-	if strings.Contains(socketKey, "|") {
-		protocol := strings.SplitN(socketKey, "|", 2)[0]
-		Log(function + " - " + socketKey + " - Connection is " + protocol)
-		return strings.ToLower(protocol)
-	} else { // Legacy protocol definitions
-		if UseUDP {
-			return "udp"
-		} // not UDP, not SSH
-		if UseTelnet {
-			return "telnet"
-		} else {
-			return "tcp"
+	} else { // TCP
+		if _, ok := connectionsTCP[socketKey]; !ok {
+			//Log("nhh45e456 TCP not connected")
+			return false
 		}
 	}
+	// Log("Socket Key has connection")
+	return true // if we got here, there is already a map created
 }
 
 func Log(text string) {
@@ -1097,46 +771,24 @@ func getSocketKey(context echo.Context) (string, error) {
 	var port = DefaultSocketPort
 	var username = ""
 	var password = ""
-	var protocol = ""
-
-	Log("11111111" + address)
-	Log("------------------ADDRESS : " + address)
-
-	// Check for protocol using "|" delimiter
-	if strings.Contains(address, "|") {
-		parts := strings.SplitN(address, "|", 2)
-		protocol = strings.ToLower(parts[0])
-		address = parts[1]
-		Log("Protocol detected: " + protocol)
-	}
 
 	if strings.Count(address, "@") == 1 {
 		// there are credentials in there
 		credentials := strings.Split(address, "@")[0]
-		address = strings.Split(address, "@")[1] // Now address contains only host[:port]
-		Log("222222222222222" + address)
+		address = strings.Split(address, "@")[1]
 		if strings.Count(credentials, ":") == 1 {
 			username = strings.Split(credentials, ":")[0]
 			password = strings.Split(credentials, ":")[1]
 		}
 	}
-
 	if strings.Count(address, ":") == 1 {
-		Log("------------------ADDRESS : " + address)
-		// looks like a port was explicitly defined with the address
-		parts := strings.Split(address, ":")
-		address = parts[0] // Host part
-		var err error
-		port, err = strconv.Atoi(parts[1]) // Port part
+		// looks like a port was explicitely defined with the address
+		var err error = nil
+		_ = err // appease
+		port, err = strconv.Atoi(strings.Split(address, ":")[1])
+		address = strings.Split(address, ":")[0]
 		if err != nil {
 			return "", errors.New("port needs to be an integer")
-		}
-	}
-
-	// Default port handling based on protocol
-	if port == DefaultSocketPort {
-		if strings.ToLower(protocol) == "ssh" && DefaultSSHPort != DefaultSocketPort {
-			port = DefaultSSHPort
 		}
 	}
 
@@ -1144,13 +796,6 @@ func getSocketKey(context echo.Context) (string, error) {
 	if address == "all" {
 		return address, nil
 	}
-
-	// Include protocol in socket key if specified
-	if protocol != "" {
-		return protocol + "|" + username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
-	}
-
-	// Legacy socketKey with no protocol specified
 	return username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
 }
 
@@ -1561,14 +1206,7 @@ func updateDoOnce(arguments []string) bool {
 // This function started from a tutorial: https://www.soberkoder.com/consume-rest-api-go/
 func DoPost(socketKey string, theURL string, jsonReq string) (string, error) {
 	function := "DoPost"
-
-	// Remove protocol from socketKey if specified
-	socketKeySanatized := socketKey
-	if strings.Contains(socketKey, "|") {
-		socketKeySanatized = strings.Split(socketKey, "|")[1]
-	}
-
-	postURL := "http://" + socketKeySanatized + "/" + theURL
+	postURL := "http://" + socketKey + "/" + theURL
 	Log("======> " + function + " - doing POST to: " + postURL + " with contents: " + jsonReq)
 	jsonReqBytes := []byte(jsonReq)
 	password := ""
