@@ -103,10 +103,6 @@ func validGlobals() bool {
 		Log("Cannot use both UDP and Telnet at the same time")
 		return false
 	}
-	if DisconnectAfterDoneRefreshing && !KeepAlive {
-		Log("DisconnectAfterDoneRefreshing can only be true if KeepAlive is also true")
-		return false
-	}
 	if SSHMode != "per-command session" {
 		Log("SSH Mode only supports: 'per-command session'")
 		return false
