@@ -1049,7 +1049,11 @@ func internalGetDeviceProtocol(socketKey string) string {
 		switch protocol {
 		case "udp", "ssh", "tcp", "telnet":
 		default:
-			AddToErrors(socketKey, function+" - protocol specified but: "+protocol+", is invalid!")
+			AddToErrors(socketKey, function+" - protocol specified but: '"+protocol+"' is invalid!")
+		}
+		if UseUDP {
+			AddToErrors(socketKey, " - protocol specified in URL but framework is in UseUDP mode")
+			return "udp"
 		}
 		Log(function + " - " + socketKey + " - Connection is " + protocol)
 		return protocol
