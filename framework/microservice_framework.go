@@ -612,10 +612,10 @@ func establishSocketConnectionIfNeeded(socketKey string) bool {
 		return true
 	}
 
-	// Extract protocol if present
-	protocol := ""
 	socketAddress := socketKey
 
+	// Extract protocol if present
+	protocol := ""
 	if strings.Contains(socketKey, "|") {
 		parts := strings.SplitN(socketKey, "|", 2)
 		protocol = parts[0]
@@ -778,34 +778,14 @@ func writeLineToSSHSocket(socketKey string, line string) bool {
 		outputStr := outputBuf.String()
 		Log(function + " - Raw output: " + outputStr)
 
-		// Clean up the output
-		cleanOutput := processSSHOutput(outputStr, command)
-
 		// Store for reading phase
-		global_reader[socketKey] = bufio.NewReader(strings.NewReader(cleanOutput + string(byte(GlobalDelimiter))))
+		global_reader[socketKey] = bufio.NewReader(strings.NewReader(outputStr + string(byte(GlobalDelimiter))))
 		return true
 	} else {
 		// Add future modes here
 		AddToErrors(socketKey, function+" - Not Implemented!  SSHMode only supports 'per-command session'")
 		return false
 	}
-}
-
-// Helper function to process SSH output - gets just the last non-empty line
-func processSSHOutput(output string, command string) string {
-	normalized := strings.ReplaceAll(output, "\r\n", "\n")
-	lines := strings.Split(normalized, "\n")
-
-	// Find the last non-empty line
-	var lastLine string
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed != "" {
-			lastLine = trimmed
-			break
-		}
-	}
-	return lastLine
 }
 
 func WriteLineToSocket(socketKey string, line string) bool {
@@ -900,30 +880,17 @@ func ReadLineFromSocket(socketKey string) string {
 	return msg
 }
 
-func tryReadSSHLineFromSocket(socketKey string) string {
-	function := "tryReadSSHLineFromSocket"
-	bytesRead := 0
-	// Read from cached output (stored during write phase)
+func tryReadLineFromSSHSocket(socketKey string) string {
+	function := "tryReadLineFromSSHSocket"
 	r, ok := global_reader[socketKey]
 	if !ok || r == nil {
 		Log(function + " - " + socketKey + " - no cached SSH output")
 		return ""
 	}
-	// Read the cached response
-	data, err := r.ReadBytes(byte(GlobalDelimiter))
-	if err != nil && err != io.EOF {
-		Log(function + " - " + socketKey + " - error reading cached SSH output")
-		return ""
-	}
-	if len(data) == 0 {
-		Log(function + " - " + socketKey + " - empty cached SSH output")
-		return ""
-	}
-	ret := strings.TrimSpace(string(data))
-	bytesRead = len(ret)
-	Log(fmt.Sprintf("  "+function+" - "+socketKey+" - read %d bytes (SSH): %v", bytesRead, ret))
-	// Clear the cached output
+	data, _ := io.ReadAll(r) // read entire cached payload
 	delete(global_reader, socketKey)
+	ret := strings.TrimSpace(string(data))
+	Log(fmt.Sprintf("  %s - %s - read %d bytes (SSH)", function, socketKey, len(ret)))
 	return ret
 }
 
@@ -943,7 +910,7 @@ func tryReadLineFromSocket(socketKey string) string {
 
 	protocol := internalGetDeviceProtocol(socketKey)
 	if protocol == "ssh" {
-		sshRet := tryReadSSHLineFromSocket(socketKey)
+		sshRet := tryReadLineFromSSHSocket(socketKey)
 		Log("  " + function + " " + socketKey + " - read : " + sshRet)
 		return sshRet
 
