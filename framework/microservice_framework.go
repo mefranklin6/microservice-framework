@@ -5,6 +5,7 @@ package framework
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -718,7 +719,7 @@ func writeLineToSSHSocket(socketKey string, line string) bool {
 		}
 		defer session.Close()
 
-		// Set up pipes for interactive I/O
+		// Set up I/O
 		var outputBuf bytes.Buffer
 		session.Stdout = &outputBuf
 		session.Stderr = &outputBuf
@@ -729,48 +730,58 @@ func writeLineToSSHSocket(socketKey string, line string) bool {
 			return false
 		}
 
-		// Start an interactive shell session
+		// Start the shell
 		if err := session.Shell(); err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to start shell: "+err.Error())
 			return false
 		}
 
-		// Wait a moment for the banner to appear
-		time.Sleep(500 * time.Millisecond)
-
-		// Send the command and a newline
+		// Send the command
 		if _, err := stdin.Write([]byte(command + "\n")); err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - Failed to send command: "+err.Error())
 			return false
 		}
 
-		// Give the command time to execute and produce output
-		time.Sleep(500 * time.Millisecond)
+		// Wait a short time for initial response
+		time.Sleep((time.Duration(TryReadTimeout) * time.Millisecond) / 2)
 
-		// Get the full output
-		output := outputBuf.String()
-		Log(function + " - Raw output: " + output)
+		// Create a timeout context
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(WriteTimeout)*time.Second)
+		defer cancel()
 
-		// Clean and store the output
-		// keep only the last non-empty line of the captured output
-		out := strings.ReplaceAll(output, "\r\n", "\n")
-		parts := strings.Split(out, "\n")
-		lastLine := ""
-		for i := len(parts) - 1; i >= 0; i-- {
-			if strings.TrimSpace(parts[i]) != "" {
-				lastLine = parts[i]
-				break
-			}
+		// Use a channel to signal completion
+		done := make(chan struct{})
+
+		// Use goroutine to handle command completion or timeout
+		go func() {
+			// Wait more for any remaining output
+			time.Sleep(((time.Duration(TryReadTimeout) * time.Millisecond) / 2))
+
+			// Close stdin to signal we're done with input
+			stdin.Close()
+
+			// Signal we're done
+			close(done)
+		}()
+
+		// Wait for completion or timeout
+		select {
+		case <-done:
+			// Command completed
+		case <-ctx.Done():
+			// Timeout or cancellation
+			AddToErrors(socketKey, function+" - "+socketKey+" - Command timed out")
+			return false
 		}
-		if lastLine == "" && len(parts) > 0 {
-			// fallback to the last element even if empty
-			lastLine = parts[len(parts)-1]
-		}
-		output = lastLine
-		cleanOutput := strings.ReplaceAll(output, "\r", "")
-		cleanOutput = strings.TrimSpace(cleanOutput)
 
-		// Store output in a string reader for the read phase
+		// Process the output
+		outputStr := outputBuf.String()
+		Log(function + " - Raw output: " + outputStr)
+
+		// Clean up the output
+		cleanOutput := processSSHOutput(outputStr, command)
+
+		// Store for reading phase
 		global_reader[socketKey] = bufio.NewReader(strings.NewReader(cleanOutput + string(byte(GlobalDelimiter))))
 		return true
 	} else {
@@ -778,6 +789,23 @@ func writeLineToSSHSocket(socketKey string, line string) bool {
 		AddToErrors(socketKey, function+" - Not Implemented!  SSHMode only supports 'per-command session'")
 		return false
 	}
+}
+
+// Helper function to process SSH output - gets just the last non-empty line
+func processSSHOutput(output string, command string) string {
+	normalized := strings.ReplaceAll(output, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+
+	// Find the last non-empty line
+	var lastLine string
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed != "" {
+			lastLine = trimmed
+			break
+		}
+	}
+	return lastLine
 }
 
 func WriteLineToSocket(socketKey string, line string) bool {
