@@ -108,13 +108,10 @@ func validGlobals() bool {
 	}
 	if SSHMode != "per-command session" {
 		Log("SSH Mode only supports: 'per-command session'")
-	}
-	if SSHAuthType != "keyboard-interactive" {
-		Log("SSH Auth Type only supports: 'keybard-interactive'")
 		return false
 	}
-	if DefaultSocketPort < 1 || DefaultSocketPort > 65535 {
-		Log("DefaultSocketPort must be between 1 and 65535")
+	if SSHAuthType != "keyboard-interactive" {
+		Log("SSH Auth Type only supports: 'keyboard-interactive'")
 		return false
 	}
 	return true
@@ -496,6 +493,8 @@ func checkFunctionAppend(functionToCall string, endPoint string, socketKey strin
 	return true
 }
 
+// Note: SSH is implemented in a way that prioritizes device compatibility over security
+// Do not use if you actually need a secure connection
 func establishSSHConnection(socketKey string, socketAddress string) bool {
 	function := "establishSSHConnection"
 	Log(function + " - " + socketKey + " - using SSH transport")
@@ -925,7 +924,7 @@ func tryReadLineFromSocket(socketKey string) string {
 	var err error = nil
 	data := make([]byte, 1024)
 	var bytesRead = 0
-	if !UseUDP { // TCP
+	if protocol == "tcp" || protocol == "telnet" {
 		err = connectionsTCP[socketKey].SetReadDeadline(time.Now().Add(time.Duration(TryReadTimeout) * time.Millisecond))
 		if err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - n645ub can't set read timeout with: "+err.Error())
@@ -946,7 +945,7 @@ func tryReadLineFromSocket(socketKey string) string {
 			AddToErrors(socketKey, function+" - "+socketKey+" - error seeking GlobalDelimiter: "+err.Error())
 			return ""
 		}
-	} else { // UDP
+	} else if protocol == "udp" || UseUDP {
 		err = connectionsUDP[socketKey].SetReadDeadline(time.Now().Add(time.Duration(TryReadTimeout) * time.Millisecond))
 		if err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - can't set read timeout with: "+err.Error())
@@ -963,6 +962,8 @@ func tryReadLineFromSocket(socketKey string) string {
 		//time.Sleep(100)  // sleep to give the remote UDP device a chance to get the packet back
 		//bytesRead, err = connectionsUDP[socketKey].Read(data) // A UDP packet
 		//}
+	} else {
+		AddToErrors(socketKey, function+"- No proper path for protocol: "+protocol) // should not happen
 	}
 	// Log(fmt.Sprintf("RRRRRR2  read: %v", string(data)))
 	ret := strings.TrimSpace(string(data))
@@ -1094,7 +1095,11 @@ func getSocketKey(context echo.Context) (string, error) {
 		parts := strings.SplitN(address, "|", 2)
 		protocol = strings.ToLower(parts[0])
 		address = parts[1]
-		Log("Protocol detected: " + protocol)
+		switch protocol {
+		case "udp", "ssh", "tcp", "telnet":
+		default:
+			return "", errors.New("getSocketKey - protocol specified but: " + protocol + ", is invalid!")
+		}
 	}
 
 	if strings.Count(address, "@") == 1 {
@@ -1554,12 +1559,12 @@ func DoPost(socketKey string, theURL string, jsonReq string) (string, error) {
 	function := "DoPost"
 
 	// Remove protocol from socketKey if specified
-	socketKeySanatized := socketKey
+	socketKeySanitized := socketKey
 	if strings.Contains(socketKey, "|") {
-		socketKeySanatized = strings.Split(socketKey, "|")[1]
+		socketKeySanitized = strings.Split(socketKey, "|")[1]
 	}
 
-	postURL := "http://" + socketKeySanatized + "/" + theURL
+	postURL := "http://" + socketKeySanitized + "/" + theURL
 	Log("======> " + function + " - doing POST to: " + postURL + " with contents: " + jsonReq)
 	jsonReqBytes := []byte(jsonReq)
 	password := ""
