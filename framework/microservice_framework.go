@@ -27,6 +27,7 @@ import (
 // Use setFrameworkGlobals() in microservice.go to change these variables.
 var UseUDP = false                       // Legacy. Runs the entire service in UDP-only mode
 var UseTelnet = false                    // Legacy.  Runs the entire service in TCP Telnet mode.
+var UseSSH = false                       // Legacy.  Runs the entire service in SSH mode.
 var SSHMode = "per-command session"      // Options are "per-command session"
 var SSHAuthType = "keyboard-interactive" // Options are "keyboard-interactive"
 var KeepAlive = false
@@ -99,8 +100,9 @@ func RegisterMainGetFunc(fn MainGetFunc) {
 
 // Validates the globals and tunables upon startup
 func validGlobals() bool {
-	if UseUDP && UseTelnet {
-		Log("Cannot use both UDP and Telnet at the same time")
+	if (UseUDP && UseTelnet) || (UseUDP && UseSSH) || (UseSSH && UseTelnet) {
+		Log("Incompatible framework globals set.  Please check UseUDP, UseTelnet and UseSSH settings.")
+		Log("If you want to specify protocol in URL's, set UseUDP, UseTelnet and UseSSH all to false")
 		return false
 	}
 	if SSHMode != "per-command session" {
@@ -600,6 +602,7 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 	return true
 }
 
+// Must be called with connectionsMutex held
 func establishSocketConnectionIfNeeded(socketKey string) bool {
 	function := "establishSocketConnectionIfNeeded"
 
@@ -609,21 +612,15 @@ func establishSocketConnectionIfNeeded(socketKey string) bool {
 	}
 
 	socketAddress := socketKey
-
-	// Extract protocol if present
-	protocol := ""
-	if strings.Contains(socketKey, "|") {
-		parts := strings.SplitN(socketKey, "|", 2)
-		protocol = parts[0]
-		socketAddress = parts[1]
-	}
-
 	if strings.Count(socketAddress, "@") == 1 {
 		socketAddress = strings.Split(socketAddress, "@")[1]
 	}
 
+	protocol := internalGetDeviceProtocol(socketKey)
+
 	// Connect based on explicit protocol or fall back to global settings
-	if protocol == "udp" || (protocol == "" && UseUDP) {
+	switch protocol {
+	case "udp":
 		// UDP connection logic
 		//We use ListenUDP instead of Dial in case a UDP device responds from a different port than the one we send to.
 		listeningPort := ":" + fmt.Sprint(DefaultSocketPort)
@@ -639,11 +636,11 @@ func establishSocketConnectionIfNeeded(socketKey string) bool {
 			Log(function + " - " + socketKey + " - UDP connection successfully established")
 			connectionsUDP[socketKey] = connection
 		}
-	} else if protocol == "ssh" {
+	case "ssh":
 		if !establishSSHConnection(socketKey, socketAddress) {
 			return false
 		}
-	} else {
+	default:
 		// TCP/Telnet connection (default behavior)
 		d := net.Dialer{Timeout: time.Duration(ConnectTimeout) * time.Second}
 		connection, err := d.Dial("tcp", socketAddress)
@@ -805,7 +802,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 	}
 
 	// UDP
-	if protocol == "udp" || protocol == "" && UseUDP {
+	if protocol == "udp" {
 		err := connectionsUDP[socketKey].SetWriteDeadline(time.Now().Add(time.Duration(WriteTimeout) * time.Second))
 		if err != nil {
 			return addToErrorsAndReturn(socketKey, function+" - "+socketKey+" - bdsf34432 can't set write timeout with: "+err.Error(), false)
@@ -915,7 +912,8 @@ func tryReadLineFromSocket(socketKey string) string {
 	var err error = nil
 	data := make([]byte, 1024)
 	var bytesRead = 0
-	if protocol == "tcp" || protocol == "telnet" {
+	switch protocol {
+	case "tcp", "telnet":
 		err = connectionsTCP[socketKey].SetReadDeadline(time.Now().Add(time.Duration(TryReadTimeout) * time.Millisecond))
 		if err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - n645ub can't set read timeout with: "+err.Error())
@@ -936,7 +934,7 @@ func tryReadLineFromSocket(socketKey string) string {
 			AddToErrors(socketKey, function+" - "+socketKey+" - error seeking GlobalDelimiter: "+err.Error())
 			return ""
 		}
-	} else if protocol == "udp" || UseUDP {
+	case "udp":
 		err = connectionsUDP[socketKey].SetReadDeadline(time.Now().Add(time.Duration(TryReadTimeout) * time.Millisecond))
 		if err != nil {
 			AddToErrors(socketKey, function+" - "+socketKey+" - can't set read timeout with: "+err.Error())
@@ -953,7 +951,7 @@ func tryReadLineFromSocket(socketKey string) string {
 		//time.Sleep(100)  // sleep to give the remote UDP device a chance to get the packet back
 		//bytesRead, err = connectionsUDP[socketKey].Read(data) // A UDP packet
 		//}
-	} else {
+	default:
 		AddToErrors(socketKey, function+"- No proper path for protocol: "+protocol) // should not happen
 	}
 	// Log(fmt.Sprintf("RRRRRR2  read: %v", string(data)))
@@ -967,7 +965,7 @@ func tryReadLineFromSocket(socketKey string) string {
 			//      so timeout here is not an error
 			// Log("tryReadLineFromSocket - " + socketKey + " - nothing to read" )
 			Log(fmt.Sprintf("  " + function + " - " + socketKey + " - TIMEOUT read : " + ret))
-			if UseUDP {
+			if protocol == "udp" {
 				// Closing connection in case of timeout to let other UDP devices (e.g. VISCA cameras)
 				//  connect with microservice.
 				// Caused by AVer set power not sending a response back.
@@ -975,7 +973,7 @@ func tryReadLineFromSocket(socketKey string) string {
 			}
 			// Telnet negotiations for the Biamp DSP do not have a terminator. The response is read in but the connection times out.
 			// This allows us to see and respond to the negotiation.
-			if UseTelnet || protocol == "telnet" {
+			if protocol == "telnet" {
 				return ret
 			} else {
 				return ""
@@ -1033,12 +1031,11 @@ func GetDeviceProtocol(socketKey string) string {
 }
 
 // Expected to be used inside the framework. Must be called with connectionsMutex held.
-// Returns "tcp", "telnet", "udp", "ssh"
+// Returns "tcp", "telnet", "udp", "ssh" or "" if the config writer made an error
 func internalGetDeviceProtocol(socketKey string) string {
 	function := "internalGetDeviceProtocol"
 
 	// Check for explicit protocol
-	// (SSH can only be defined explicitly)
 	if strings.Contains(socketKey, "|") {
 		protocol := strings.SplitN(socketKey, "|", 2)[0]
 		protocol = strings.ToLower(protocol)
@@ -1046,19 +1043,20 @@ func internalGetDeviceProtocol(socketKey string) string {
 		case "udp", "ssh", "tcp", "telnet":
 		default:
 			AddToErrors(socketKey, function+" - protocol specified but: '"+protocol+"' is invalid!")
+			return ""
 		}
-		if UseUDP {
-			AddToErrors(socketKey, " - protocol specified in URL but framework is in UseUDP mode")
-			return "udp"
+		if UseUDP || UseTelnet || UseSSH {
+			AddToErrors(socketKey, " - protocol specified in URL but framework is in single-protocol mode")
+			return ""
 		}
-		Log(function + " - " + socketKey + " - Connection is " + protocol)
 		return protocol
 	} else { // Legacy protocol definitions (infered from framework tunables)
 		if UseUDP {
 			return "udp"
-		}
-		if UseTelnet {
+		} else if UseTelnet {
 			return "telnet"
+		} else if UseSSH {
+			return "ssh"
 		} else {
 			return "tcp"
 		}
@@ -1085,7 +1083,7 @@ func getSocketKey(context echo.Context) (string, error) {
 	var password = ""
 	var protocol = ""
 
-	// Check for protocol using "|" delimiter
+	// Check if protocol was defined in the URL
 	if strings.Contains(address, "|") {
 		parts := strings.SplitN(address, "|", 2)
 		protocol = strings.ToLower(parts[0])
@@ -1116,7 +1114,6 @@ func getSocketKey(context echo.Context) (string, error) {
 		if err != nil {
 			return "", errors.New("port needs to be an integer")
 		}
-
 	}
 
 	// No port defined, add a default based on protocol
@@ -1126,9 +1123,7 @@ func getSocketKey(context echo.Context) (string, error) {
 			port = DefaultSSHPort
 		default:
 			port = DefaultSocketPort
-
 		}
-
 	}
 
 	// "all" is a keyword used by getErrors, it intends to get errors for all devices
@@ -1141,7 +1136,7 @@ func getSocketKey(context echo.Context) (string, error) {
 		return protocol + "|" + username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
 	}
 
-	// Legacy socketKey with no protocol specified
+	// Legacy socketKey format with no protocol included
 	return username + ":" + password + "@" + address + ":" + strconv.Itoa(port), nil
 }
 
@@ -1548,16 +1543,22 @@ func updateDoOnce(arguments []string) bool {
 	return true
 }
 
+// Returns a socketKey without a protocol embedded, like in v1.2.9 or earlier
+// This is to solve specific edge-cases, like in DoPost
+func StripProtocolPrefix(socketKey string) string {
+	if strings.Contains(socketKey, "|") {
+		return strings.Split(socketKey, "|")[1]
+	}
+	return socketKey
+}
+
 // Used for the Bravia microservice
 // This function started from a tutorial: https://www.soberkoder.com/consume-rest-api-go/
 func DoPost(socketKey string, theURL string, jsonReq string) (string, error) {
 	function := "DoPost"
 
 	// Remove protocol from socketKey if specified
-	socketKeySanitized := socketKey
-	if strings.Contains(socketKey, "|") {
-		socketKeySanitized = strings.Split(socketKey, "|")[1]
-	}
+	socketKeySanitized := StripProtocolPrefix(socketKey)
 
 	postURL := "http://" + socketKeySanitized + "/" + theURL
 	Log("======> " + function + " - doing POST to: " + postURL + " with contents: " + jsonReq)
