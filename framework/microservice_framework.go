@@ -675,11 +675,15 @@ func CloseSocketConnection(socketKey string) {
 func internalCloseSocketConnection(socketKey string) bool {
 	switch internalGetDeviceProtocol(socketKey) {
 	case "udp":
-		connectionsUDP[socketKey].Close()
-		delete(connectionsUDP, socketKey)
+		if conn, ok := connectionsUDP[socketKey]; ok && conn != nil {
+			conn.Close()
+			delete(connectionsUDP, socketKey)
+		}
 	case "tcp":
-		connectionsTCP[socketKey].Close()
-		delete(connectionsTCP, socketKey)
+		if conn, ok := connectionsTCP[socketKey]; ok && conn != nil {
+			conn.Close()
+			delete(connectionsTCP, socketKey)
+		}
 	case "ssh":
 		if client, ok := connectionsSSH[socketKey]; ok && client != nil {
 			_ = client.Close()
