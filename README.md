@@ -14,3 +14,25 @@ For example: version 1.0.12
 - X - Large version change. Only updated when the core structure of the framework is overhauled.
 - Y - Medium version change. Updated when a new feature is added. For example, adding UDP or Telnet communications.
 - Z - Small version change. Updated every time a commit is made. Fine for small bug fixes or log tweaks.
+
+## Build Using a Local Copy of the Framework
+To build locally, run 
+<pre>
+go mod edit -replace github.com/Dartmouth-OpenAV/microservice-framework=./source/microservice-framework 
+</pre>
+in the root folder of your project with the go.mod file so that Go references your local framework files.
+
+## Build Using a Pull Request Version of the Framework
+In the microservice repo you're testing, make sure you update the .gitmodule with the fork path
+<pre>
+[submodule "source/microservice-framework"]
+    path = source/microservice-framework
+    url = https://github.com/mefranklin6/microservice-framework.git
+</pre>
+Note: This is an actual pull request.  You'll need to specify the url of the one you're testing.
+
+Then in the root of your repo, run:
+<pre>
+git submodule sync
+git submodule update --remote --init
+</pre>
