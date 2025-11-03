@@ -679,7 +679,7 @@ func internalCloseSocketConnection(socketKey string) bool {
 			conn.Close()
 			delete(connectionsUDP, socketKey)
 		}
-	case "tcp":
+	case "tcp", "telnet":
 		if conn, ok := connectionsTCP[socketKey]; ok && conn != nil {
 			conn.Close()
 			delete(connectionsTCP, socketKey)
@@ -832,7 +832,7 @@ func WriteLineToSocket(socketKey string, line string) bool {
 			Log("writeLineToSocket - " + socketKey + " - wrote " + strconv.Itoa(bytesWritten) + " bytes: " + line)
 			return true
 		}
-	} else { // TCP
+	} else { // TCP or Telnet
 		err := connectionsTCP[socketKey].SetWriteDeadline(time.Now().Add(time.Duration(WriteTimeout) * time.Second))
 		if err != nil {
 			return addToErrorsAndReturn(socketKey, function+" - "+socketKey+" - can't set write timeout with: "+err.Error(), false)
