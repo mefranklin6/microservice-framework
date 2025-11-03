@@ -503,7 +503,7 @@ func establishSSHConnection(socketKey string, socketAddress string) bool {
 	credsPart := socketKey
 
 	// Remove protocol prefix if present
-	if strings.Contains(socketKey, "|") {
+	if strings.Count(socketKey, "|") == 1 {
 		credsPart = strings.Split(socketKey, "|")[1]
 	}
 
@@ -1040,7 +1040,7 @@ func internalGetDeviceProtocol(socketKey string) string {
 	function := "internalGetDeviceProtocol"
 
 	// Check for explicit protocol
-	if strings.Contains(socketKey, "|") {
+	if strings.Count(socketKey, "|") == 1 {
 		protocol := strings.SplitN(socketKey, "|", 2)[0]
 		protocol = strings.ToLower(protocol)
 		switch protocol {
@@ -1088,7 +1088,7 @@ func getSocketKey(context echo.Context) (string, error) {
 	var protocol = ""
 
 	// Check if protocol was defined in the URL
-	if strings.Contains(address, "|") {
+	if strings.Count(address, "|") == 1 {
 		parts := strings.SplitN(address, "|", 2)
 		protocol = strings.ToLower(parts[0])
 		address = parts[1]
@@ -1550,7 +1550,7 @@ func updateDoOnce(arguments []string) bool {
 // Returns a socketKey without a protocol embedded, like in v1.2.9 or earlier
 // This is to solve specific edge-cases, like in DoPost
 func StripProtocolPrefix(socketKey string) string {
-	if strings.Contains(socketKey, "|") {
+	if strings.Count(socketKey, "|") == 1 {
 		return strings.Split(socketKey, "|")[1]
 	}
 	return socketKey
